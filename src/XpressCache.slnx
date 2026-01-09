@@ -4,7 +4,9 @@
     <File Path="../doc/API-Reference.md" />
     <File Path="../doc/Architecture.md" />
     <File Path="../doc/Getting-Started.md" />
+    <File Path="../doc/Known-Issues.md" />
     <File Path="../doc/Performance-Guide.md" />
+    <File Path="../doc/Testing-Guide.md" />
   </Folder>
   <Project Path="XpressCache.Tests/XpressCache.Tests.csproj" />
   <Project Path="XpressCache/XpressCache.csproj" />
