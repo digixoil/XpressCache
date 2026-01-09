@@ -47,7 +47,7 @@ Install-Package XpressCache
 
 ```csharp
 using XpressCache;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logger;
 using Microsoft.Extensions.DependencyInjection;
 
 // Setup with dependency injection

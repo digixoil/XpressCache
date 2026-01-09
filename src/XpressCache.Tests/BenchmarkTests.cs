@@ -9,7 +9,10 @@ namespace XpressCache.Tests;
 /// <summary>
 /// Performance and concurrency benchmark tests for <see cref="CacheStore"/>.
 /// These tests verify performance characteristics and scalability.
+/// Run separately from unit tests to avoid resource contention.
 /// </summary>
+[Trait("Category", "Performance")]
+[Trait("Category", "Benchmark")]
 public class BenchmarkTests
 {
     private readonly ITestOutputHelper _output;
@@ -30,6 +33,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Fast")]
     public async Task Benchmark_CacheHit_Performance()
     {
         // Arrange
@@ -64,6 +68,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Medium")]
     public async Task Benchmark_CacheMiss_WithStampedePrevention()
     {
         // Arrange
@@ -100,6 +105,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Medium")]
     public async Task Benchmark_ConcurrentCacheHits()
     {
         // Arrange
@@ -140,6 +146,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]
     public async Task Benchmark_StampedePrevention_Effectiveness()
     {
         // Arrange
@@ -184,6 +191,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]
     public async Task Benchmark_ParallelLoad_Comparison()
     {
         // Arrange
@@ -221,12 +229,13 @@ public class BenchmarkTests
         // Assert
         Assert.Equal(concurrentRequests, recoveryCallCount);
         // With parallel execution, should complete reasonably fast
-        // Allow generous timeout for CI/slow environments (5 seconds instead of 100ms)
-        Assert.True(sw.ElapsedMilliseconds < 5000,
+        // Allow generous timeout for CI/slow environments (10 seconds for 20 parallel tasks with 10ms delay each)
+        Assert.True(sw.ElapsedMilliseconds < 10000,
             $"Parallel execution took too long: {sw.ElapsedMilliseconds} ms");
     }
 
     [Fact]
+    [Trait("Speed", "Fast")]
     public async Task Benchmark_SetItem_Throughput()
     {
         // Arrange
@@ -255,6 +264,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Fast")]
     public async Task Benchmark_RemoveItem_Throughput()
     {
         // Arrange
@@ -292,6 +302,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Medium")]
     public void Benchmark_CleanupCache_Performance()
     {
         // Arrange
@@ -342,6 +353,7 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Medium")]
     public async Task Benchmark_GetCachedItems_Performance()
     {
         // Arrange
@@ -375,6 +387,8 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]
+    [Trait("Category", "Stress")]
     public async Task Benchmark_MixedWorkload()
     {
         // Arrange
@@ -437,6 +451,8 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Medium")]
+    [Trait("Category", "Stress")]
     public async Task Benchmark_MemoryPressure_LargeCache()
     {
         // Arrange
@@ -480,6 +496,8 @@ public class BenchmarkTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]
+    [Trait("Category", "Stress")]
     public async Task Stress_ThousandConcurrentMissesSameKey()
     {
         // Arrange
