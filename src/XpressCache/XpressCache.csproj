@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net7.0;net8.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>XpressCache</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Russlan Kafri</Authors>
+    <Company>Digixoil</Company>
+    <Description>A high-performance, thread-safe in-memory cache with built-in cache stampede (thundering herd) prevention using per-key single-flight locking. Features sliding expiration, custom validation, and configurable behavior.</Description>
+    <PackageTags>cache;caching;in-memory;thread-safe;single-flight;stampede-prevention;thundering-herd;concurrent;async</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://www.digixoil.se</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/digixoil/XpressCache</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright © Digixoil</Copyright>
+    
+    <!-- Build Configuration -->
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>XpressCache</RootNamespace>
+    <AssemblyName>XpressCache</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/doc/">
+    <File Path="../doc/ai/XpressCache_AI_Agent_Plan.txt" />
+    <File Path="../doc/API-Reference.md" />
+    <File Path="../doc/Architecture.md" />
+    <File Path="../doc/Getting-Started.md" />
+    <File Path="../doc/Performance-Guide.md" />
+  </Folder>
+  <Project Path="XpressCache.Tests/XpressCache.Tests.csproj" />
+  <Project Path="XpressCache/XpressCache.csproj" />
+</Solution>
