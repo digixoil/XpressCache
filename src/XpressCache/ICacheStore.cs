@@ -27,7 +27,7 @@ namespace XpressCache;
 ///   <item>
 ///     <term>Read-Through Caching</term>
 ///     <description>
-///       Use <see cref="LoadItem{T}(Guid?, string, Func{Guid, Task{T}}, Func{T, Task{bool}}, CacheLoadBehavior)"/> 
+///       Use <see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/> 
 ///       with a cache-miss recovery function to automatically populate the cache on first access.
 ///     </description>
 ///   </item>
@@ -72,7 +72,7 @@ namespace XpressCache;
 ///   <item>
 ///     <term>Per-call override</term>
 ///     <description>
-///       <see cref="CacheLoadBehavior"/> parameter in <see cref="LoadItem{T}(Guid?, string, Func{Guid, Task{T}}, Func{T, Task{bool}}, CacheLoadBehavior)"/>
+///       <see cref="CacheLoadBehavior"/> parameter in <see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/>
 ///     </description>
 ///   </item>
 /// </list>
@@ -99,7 +99,7 @@ public interface ICacheStore
     /// <para>
     /// When set to <c>false</c>, all cache operations become no-ops:
     /// <list type="bullet">
-    ///   <item><see cref="LoadItem{T}(Guid?, string, Func{Guid, Task{T}}, Func{T, Task{bool}}, CacheLoadBehavior)"/> will always invoke the cache-miss recovery function</item>
+    ///   <item><see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/> will always invoke the cache-miss recovery function</item>
     ///   <item><see cref="SetItem{T}"/> will do nothing</item>
     ///   <item><see cref="GetCachedItems{T}"/> will return <c>null</c></item>
     /// </list>
@@ -120,9 +120,15 @@ public interface ICacheStore
     /// A function to retrieve the item if not found in cache. 
     /// Can be <c>null</c> if only checking cache without recovery.
     /// </param>
-    /// <param name="customValidate">
-    /// An optional validation function to verify the cached item is still valid.
+    /// <param name="syncValidate">
+    /// An optional synchronous validation function to verify the cached item is still valid.
     /// If this returns <c>false</c>, the cache-miss recovery function is invoked.
+    /// Prefer this over async validation for better performance.
+    /// </param>
+    /// <param name="asyncValidate">
+    /// An optional asynchronous validation function to verify the cached item is still valid.
+    /// If this returns <c>false</c>, the cache-miss recovery function is invoked.
+    /// Use only when validation requires async operations (e.g., database checks).
     /// </param>
     /// <param name="behavior">
     /// Specifies the cache loading behavior for stampede prevention.
@@ -136,6 +142,14 @@ public interface ICacheStore
     /// <para>
     /// This method implements a read-through caching pattern with optional custom validation
     /// and cache stampede prevention.
+    /// </para>
+    /// <para>
+    /// <strong>Validation Priority:</strong>
+    /// </para>
+    /// <para>
+    /// If both <paramref name="syncValidate"/> and <paramref name="asyncValidate"/> are provided,
+    /// the synchronous validator is checked first. If it passes, the async validator is then checked.
+    /// For best performance, use only synchronous validation when possible.
     /// </para>
     /// <para>
     /// <strong>Stampede Prevention Behavior:</strong>
@@ -159,11 +173,12 @@ public interface ICacheStore
     /// </remarks>
     /// <seealso cref="CacheLoadBehavior"/>
     /// <seealso cref="CacheStoreOptions.PreventCacheStampedeByDefault"/>
-    ValueTask<T> LoadItem<T>(
+    ValueTask<T?> LoadItem<T>(
         Guid? entityId, 
-        string subject, 
-        Func<Guid, Task<T>> cacheMissRecovery, 
-        Func<T, Task<bool>> customValidate = null,
+        string? subject, 
+        Func<Guid, Task<T>>? cacheMissRecovery, 
+        Func<T, bool>? syncValidate = null,
+        Func<T, Task<bool>>? asyncValidate = null,
         CacheLoadBehavior behavior = CacheLoadBehavior.Default) where T : class;
 
     /// <summary>
@@ -177,7 +192,7 @@ public interface ICacheStore
     /// <remarks>
     /// If an item with the same key already exists, it is replaced with the new item.
     /// </remarks>
-    Task SetItem<T>(Guid? entityId, string subject, T item) where T : class;
+    Task SetItem<T>(Guid? entityId, string? subject, T item) where T : class;
 
     /// <summary>
     /// Removes all cached items.
@@ -207,7 +222,7 @@ public interface ICacheStore
     /// <param name="entityId">The unique identifier of the entity.</param>
     /// <param name="subject">The subject that was used when storing the item (null is normalized to empty string).</param>
     /// <returns><c>true</c> if the item was found and removed; otherwise, <c>false</c>.</returns>
-    bool RemoveItem<T>(Guid? entityId, string subject);
+    bool RemoveItem<T>(Guid? entityId, string? subject);
 
     /// <summary>
     /// Gets all cached items of a specific type and subject.
@@ -227,5 +242,5 @@ public interface ICacheStore
     /// Expired entries encountered during the scan are opportunistically removed.
     /// </para>
     /// </remarks>
-    List<T> GetCachedItems<T>(string subject) where T : class;
+    List<T>? GetCachedItems<T>(string? subject) where T : class;
 }

@@ -354,12 +354,20 @@ public sealed class CacheStore : ICacheStore
     /// may be skipped, causing the entry to expire earlier than expected. This is
     /// acceptable for cache semantics - the item will simply be re-fetched on the next access.
     /// </para>
+    /// <para>
+    /// <strong>Validation Behavior:</strong>
+    /// If synchronous validation is provided, it is executed in the lock-free fast path.
+    /// If validation fails or if async validation is required, the method proceeds to
+    /// the locking path where stampede prevention can coordinate recovery.
+    /// For best performance, prefer synchronous validation when possible.
+    /// </para>
     /// </remarks>
-    public async ValueTask<T> LoadItem<T>(
+    public async ValueTask<T?> LoadItem<T>(
         Guid? entityId,
-        string subject,
-        Func<Guid, Task<T>> cacheMissRecovery,
-        Func<T, Task<bool>> customValidate = null,
+        string? subject,
+        Func<Guid, Task<T>>? cacheMissRecovery,
+        Func<T, bool>? syncValidate = null,
+        Func<T, Task<bool>>? asyncValidate = null,
         CacheLoadBehavior behavior = CacheLoadBehavior.Default) where T : class
     {
         // Fast path: cache disabled or invalid entity ID
@@ -377,12 +385,16 @@ public sealed class CacheStore : ICacheStore
         var key = new CacheKey(id, typeof(T), subject);
         var currentTicks = Environment.TickCount64;
 
-        // Fast path: Try to get from cache first (no locking needed for reads)
-        var cachedResult = TryGetFromCache<T>(key, currentTicks, customValidate);
-        if (cachedResult.Found)
+        // Fast path: Try to get from cache first with sync validation only
+        // Async validation requires going through the locking path for consistency
+        if (asyncValidate is null)
         {
-            TriggerProbabilisticCleanup();
-            return cachedResult.Value;
+            var cachedResult = TryGetFromCache<T>(key, currentTicks, syncValidate);
+            if (cachedResult.Found)
+            {
+                TriggerProbabilisticCleanup();
+                return cachedResult.Value;
+            }
         }
 
         // Resolve stampede prevention behavior
@@ -393,12 +405,12 @@ public sealed class CacheStore : ICacheStore
             _ => _options.PreventCacheStampedeByDefault
         };
 
-        // Cache miss - recover based on behavior
+        // Cache miss or async validation required - proceed through locking path
         if (cacheMissRecovery is not null)
         {
             if (useSingleFlight)
             {
-                return await LoadItemWithSingleFlightAsync(id, key, cacheMissRecovery, customValidate);
+                return await LoadItemWithSingleFlightAsync(id, key, cacheMissRecovery, syncValidate, asyncValidate);
             }
             else
             {
@@ -410,7 +422,7 @@ public sealed class CacheStore : ICacheStore
     }
 
     /// <inheritdoc/>
-    public Task SetItem<T>(Guid? entityId, string subject, T item) where T : class
+    public Task SetItem<T>(Guid? entityId, string? subject, T item) where T : class
     {
         if (!_enableCache || !entityId.HasValue || entityId.Value == Guid.Empty)
             return Task.CompletedTask;
@@ -424,7 +436,7 @@ public sealed class CacheStore : ICacheStore
     }
 
     /// <inheritdoc/>
-    public bool RemoveItem<T>(Guid? entityId, string subject)
+    public bool RemoveItem<T>(Guid? entityId, string? subject)
     {
         if (!entityId.HasValue)
             return false;
@@ -497,7 +509,7 @@ public sealed class CacheStore : ICacheStore
     /// is called frequently.
     /// </para>
     /// </remarks>
-    public List<T> GetCachedItems<T>(string subject) where T : class
+    public List<T>? GetCachedItems<T>(string? subject) where T : class
     {
         if (!_enableCache)
             return null;
@@ -575,12 +587,17 @@ public sealed class CacheStore : ICacheStore
     /// <typeparam name="T">The type of the cached item.</typeparam>
     /// <param name="key">The cache key.</param>
     /// <param name="currentTicks">The current tick count for expiry check.</param>
-    /// <param name="customValidate">Optional custom validation function.</param>
+    /// <param name="syncValidate">Optional synchronous validation function.</param>
     /// <returns>A result indicating whether the item was found and its value.</returns>
+    /// <remarks>
+    /// This method performs lock-free cache lookup with optional synchronous validation.
+    /// If validation is provided and fails, the entry is removed from cache.
+    /// Async validation is handled separately in the caller to maintain the fast path.
+    /// </remarks>
     private CacheLookupResult<T> TryGetFromCache<T>(
         CacheKey key,
         long currentTicks,
-        Func<T, Task<bool>> customValidate) where T : class
+        Func<T, bool>? syncValidate) where T : class
     {
         if (_cache.TryGetValue(key, out var entry))
         {
@@ -591,22 +608,24 @@ public sealed class CacheStore : ICacheStore
                 // Type check
                 if (data == null || data is T)
                 {
-                    // For cache hit path, we need to validate synchronously or skip validation
-                    // Custom validation is only used during cache miss recovery to avoid async in fast path
-                    // If custom validation is critical, it will be re-checked after lock acquisition
-                    if (customValidate == null)
-                    {
-                        // Renew the entry (best-effort atomic replacement)
-                        var renewedEntry = entry.Renew(currentTicks, _ttlMs);
-                        _cache.TryUpdate(key, renewedEntry, entry);
+                    var typedData = data as T;
 
-                        return new CacheLookupResult<T>(true, data as T);
+                    // Synchronous validation if provided
+                    if (syncValidate is not null && typedData is not null)
+                    {
+                        if (!syncValidate(typedData))
+                        {
+                            // Validation failed - remove from cache
+                            _cache.TryRemove(key, out _);
+                            return new CacheLookupResult<T>(false, default);
+                        }
                     }
 
-                    // With custom validation, we need to validate the entry
-                    // This requires async, so we'll handle it in the async path
-                    // For now, return not found to trigger the full async path
-                    // which will re-check cache after lock acquisition
+                    // Renew the entry (best-effort atomic replacement)
+                    var renewedEntry = entry.Renew(currentTicks, _ttlMs);
+                    _cache.TryUpdate(key, renewedEntry, entry);
+
+                    return new CacheLookupResult<T>(true, typedData);
                 }
                 else
                 {
@@ -626,10 +645,21 @@ public sealed class CacheStore : ICacheStore
     /// <summary>
     /// Attempts to get an item from cache with async custom validation.
     /// </summary>
+    /// <typeparam name="T">The type of the cached item.</typeparam>
+    /// <param name="key">The cache key.</param>
+    /// <param name="currentTicks">The current tick count for expiry check.</param>
+    /// <param name="syncValidate">Optional synchronous validation function.</param>
+    /// <param name="asyncValidate">Optional asynchronous validation function.</param>
+    /// <returns>A result indicating whether the item was found and its value.</returns>
+    /// <remarks>
+    /// This method is used during the double-check after lock acquisition.
+    /// It performs both sync and async validation if provided.
+    /// </remarks>
     private async ValueTask<CacheLookupResult<T>> TryGetFromCacheAsync<T>(
         CacheKey key,
         long currentTicks,
-        Func<T, Task<bool>> customValidate) where T : class
+        Func<T, bool>? syncValidate,
+        Func<T, Task<bool>>? asyncValidate) where T : class
     {
         if (_cache.TryGetValue(key, out var entry))
         {
@@ -642,17 +672,33 @@ public sealed class CacheStore : ICacheStore
                 {
                     var typedData = data as T;
 
-                    // Custom validation if provided
-                    bool isValid = customValidate == null || await customValidate(typedData);
-
-                    if (isValid)
+                    // Synchronous validation if provided
+                    if (syncValidate is not null && typedData is not null)
                     {
-                        // Renew the entry (best-effort atomic replacement)
-                        var renewedEntry = entry.Renew(currentTicks, _ttlMs);
-                        _cache.TryUpdate(key, renewedEntry, entry);
-
-                        return new CacheLookupResult<T>(true, typedData);
+                        if (!syncValidate(typedData))
+                        {
+                            // Sync validation failed
+                            _cache.TryRemove(key, out _);
+                            return new CacheLookupResult<T>(false, default);
+                        }
                     }
+
+                    // Async validation if provided
+                    if (asyncValidate is not null && typedData is not null)
+                    {
+                        if (!await asyncValidate(typedData))
+                        {
+                            // Async validation failed
+                            _cache.TryRemove(key, out _);
+                            return new CacheLookupResult<T>(false, default);
+                        }
+                    }
+
+                    // All validations passed - renew the entry
+                    var renewedEntry = entry.Renew(currentTicks, _ttlMs);
+                    _cache.TryUpdate(key, renewedEntry, entry);
+
+                    return new CacheLookupResult<T>(true, typedData);
                 }
                 else
                 {
@@ -676,7 +722,8 @@ public sealed class CacheStore : ICacheStore
     /// <param name="id">The entity ID.</param>
     /// <param name="key">The cache key.</param>
     /// <param name="cacheMissRecovery">The recovery function to execute on cache miss.</param>
-    /// <param name="customValidate">Optional custom validation function.</param>
+    /// <param name="syncValidate">Optional synchronous validation function.</param>
+    /// <param name="asyncValidate">Optional asynchronous validation function.</param>
     /// <returns>The cached or recovered item.</returns>
     /// <remarks>
     /// <para>
@@ -693,11 +740,12 @@ public sealed class CacheStore : ICacheStore
     /// would execute the recovery function even though only the first one needs to.
     /// </para>
     /// </remarks>
-    private async Task<T> LoadItemWithSingleFlightAsync<T>(
+    private async Task<T?> LoadItemWithSingleFlightAsync<T>(
         Guid id,
         CacheKey key,
         Func<Guid, Task<T>> cacheMissRecovery,
-        Func<T, Task<bool>> customValidate) where T : class
+        Func<T, bool>? syncValidate,
+        Func<T, Task<bool>>? asyncValidate) where T : class
     {
         // Acquire per-key lock - only one caller per key proceeds past this point
         using (await _keyedLock.AcquireAsync(key))
@@ -705,7 +753,7 @@ public sealed class CacheStore : ICacheStore
             var currentTicks = Environment.TickCount64;
 
             // Double-check: Another caller may have populated the cache while we were waiting
-            var cachedResult = await TryGetFromCacheAsync<T>(key, currentTicks, customValidate);
+            var cachedResult = await TryGetFromCacheAsync<T>(key, currentTicks, syncValidate, asyncValidate);
             if (cachedResult.Found)
             {
                 TriggerProbabilisticCleanup();
@@ -736,7 +784,7 @@ public sealed class CacheStore : ICacheStore
     /// for the same key. The last caller's result is stored in cache.
     /// Use when recovery is cheap and idempotent.
     /// </remarks>
-    private async Task<T> LoadItemWithoutLockAsync<T>(
+    private async Task<T?> LoadItemWithoutLockAsync<T>(
         Guid id,
         CacheKey key,
         Func<Guid, Task<T>> cacheMissRecovery) where T : class

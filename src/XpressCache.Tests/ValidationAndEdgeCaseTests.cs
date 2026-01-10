@@ -22,35 +22,33 @@ public class ValidationAndEdgeCaseTests
     #region Custom Validation Tests
 
     [Fact]
-    public async Task LoadItem_CustomValidationPasses_RecoversAndStoresNewItem()
+    public async Task LoadItem_SyncValidationPasses_UsesCachedItem()
     {
         // Arrange
         var entityId = Guid.NewGuid();
         var recoveryCount = 0;
 
-        // First call - populate cache (no validation)
+        // First call - populate cache
         await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "First" }); });
 
-        // Act - Second call with custom validation
-        // Note: The current implementation forces recovery when customValidate is provided
-        // because synchronous fast path cannot execute async validation
+        // Act - Second call with sync validation that passes
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Second" }); },
-            customValidate: entity => Task.FromResult(entity.IsValid));
+            syncValidate: entity => entity.IsValid);
 
-        // Assert - Both calls execute recovery due to validation path behavior
-        Assert.Equal(2, recoveryCount);
+        // Assert
+        Assert.Equal(1, recoveryCount); // Only first call did recovery
         Assert.True(result.IsValid);
-        Assert.Equal("Second", result.Name);
+        Assert.Equal("First", result.Name); // Uses cached item
     }
 
     [Fact]
-    public async Task LoadItem_CustomValidationFails_ExecutesRecovery()
+    public async Task LoadItem_SyncValidationFails_ExecutesRecovery()
     {
         // Arrange
         var entityId = Guid.NewGuid();
@@ -67,7 +65,7 @@ public class ValidationAndEdgeCaseTests
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Fresh" }); },
-            customValidate: entity => Task.FromResult(entity.IsValid));
+            syncValidate: entity => entity.IsValid);
 
         // Assert
         Assert.Equal(2, recoveryCount); // Recovery called again
@@ -76,7 +74,66 @@ public class ValidationAndEdgeCaseTests
     }
 
     [Fact]
-    public async Task LoadItem_NullCustomValidation_SkipsValidation()
+    public async Task LoadItem_AsyncValidationPasses_UsesCachedItem()
+    {
+        // Arrange
+        var entityId = Guid.NewGuid();
+        var recoveryCount = 0;
+
+        // First call - populate cache
+        await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Cached" }); });
+
+        // Act - Second call with async validation that passes
+        var result = await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "New" }); },
+            asyncValidate: async entity =>
+            {
+                await Task.CompletedTask;
+                return entity.IsValid;
+            });
+
+        // Assert
+        Assert.Equal(1, recoveryCount); // Only first call did recovery
+        Assert.Equal("Cached", result.Name); // Uses cached item
+    }
+
+    [Fact]
+    public async Task LoadItem_AsyncValidationFails_ExecutesRecovery()
+    {
+        // Arrange
+        var entityId = Guid.NewGuid();
+        var recoveryCount = 0;
+
+        // First call - populate cache with invalid item
+        await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = false }); });
+
+        // Act - Second call with async validation that fails
+        var result = await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Fresh" }); },
+            asyncValidate: async entity =>
+            {
+                await Task.CompletedTask;
+                return entity.IsValid;
+            });
+
+        // Assert
+        Assert.Equal(2, recoveryCount); // Recovery called again
+        Assert.True(result.IsValid);
+        Assert.Equal("Fresh", result.Name);
+    }
+
+    [Fact]
+    public async Task LoadItem_NullValidation_SkipsValidation()
     {
         // Arrange
         var entityId = Guid.NewGuid();
@@ -92,7 +149,8 @@ public class ValidationAndEdgeCaseTests
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "New" }); },
-            customValidate: null);
+            syncValidate: null,
+            asyncValidate: null);
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call did recovery
@@ -107,21 +165,18 @@ public class ValidationAndEdgeCaseTests
         var validationCount = 0;
         var recoveryCount = 0;
 
-        // First call populates cache (no validation)
+        // First call populates cache
         await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "Cached", IsValid = true }); });
 
-        // Second call with async validation
-        // Note: Due to implementation design, when customValidate is provided,
-        // it triggers recovery. Validation is called in the single-flight path
-        // but since the entry was removed, a new recovery happens
+        // Second call with async validation that passes
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "Recovered", IsValid = true }); },
-            customValidate: async entity =>
+            asyncValidate: async entity =>
             {
                 validationCount++;
                 await Task.Delay(10); // Simulate async validation
@@ -129,10 +184,9 @@ public class ValidationAndEdgeCaseTests
             });
 
         // Assert
-        Assert.Equal(2, recoveryCount); // Both calls execute recovery
-        Assert.Equal("Recovered", result.Name);
-        // Note: validationCount may be 0 because the second call goes through recovery
-        // (the cache entry was removed when customValidate triggered the async path)
+        Assert.Equal(1, recoveryCount); // Only first call does recovery
+        Assert.Equal("Cached", result.Name); // Uses cached value
+        Assert.Equal(1, validationCount); // Validation was called
     }
 
     #endregion
