@@ -90,6 +90,21 @@ namespace XpressCache;
 /// </para>
 /// 
 /// <para>
+/// <strong>Validation with Timing Context:</strong>
+/// </para>
+/// <para>
+/// Custom validation callbacks can receive a <see cref="CacheValidationContext"/> that provides:
+/// <list type="bullet">
+///   <item><see cref="CacheValidationContext.ExpiryTicks"/> - When the entry will expire</item>
+///   <item><see cref="CacheValidationContext.CurrentTicks"/> - The current time reference</item>
+///   <item><see cref="CacheValidationContext.TimeToExpiry"/> - Time remaining until expiration</item>
+///   <item><see cref="CacheValidationContext.Age"/> - Approximate age of the entry</item>
+///   <item><see cref="CacheValidationContext.ExpiryProgress"/> - Progress toward expiration (0.0-1.0)</item>
+/// </list>
+/// This enables sophisticated time-based validation logic such as proactive refresh.
+/// </para>
+/// 
+/// <para>
 /// <strong>Performance Characteristics:</strong>
 /// </para>
 /// <list type="bullet">
@@ -100,6 +115,7 @@ namespace XpressCache;
 /// </remarks>
 /// <seealso cref="CacheStoreOptions"/>
 /// <seealso cref="CacheLoadBehavior"/>
+/// <seealso cref="CacheValidationContext"/>
 /// <seealso cref="ICacheStore"/>
 public sealed class CacheStore : ICacheStore
 {
@@ -149,7 +165,7 @@ public sealed class CacheStore : ICacheStore
         /// <summary>
         /// The cached data.
         /// </summary>
-        public readonly object Data;
+        public readonly object? Data;
 
         /// <summary>
         /// Creates a new cache entry with the specified data and TTL.
@@ -158,7 +174,7 @@ public sealed class CacheStore : ICacheStore
         /// <param name="currentTicks">The current tick count from <see cref="Environment.TickCount64"/>.</param>
         /// <param name="ttlMs">Time-to-live in milliseconds.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public CacheEntry(object data, long currentTicks, long ttlMs)
+        public CacheEntry(object? data, long currentTicks, long ttlMs)
         {
             Data = data;
             ExpiryTicks = currentTicks + ttlMs;
@@ -214,7 +230,7 @@ public sealed class CacheStore : ICacheStore
         public readonly string Subject;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public CacheKey(Guid entityId, Type type, string subject)
+        public CacheKey(Guid entityId, Type type, string? subject)
         {
             EntityId = entityId;
             Type = type;
@@ -227,7 +243,7 @@ public sealed class CacheStore : ICacheStore
                && ReferenceEquals(Type, other.Type)
                && string.Equals(Subject, other.Subject, StringComparison.Ordinal);
 
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
             => obj is CacheKey other && Equals(other);
 
         public override int GetHashCode()
@@ -259,7 +275,7 @@ public sealed class CacheStore : ICacheStore
     /// Initializes a new instance of the <see cref="CacheStore"/> class with default options.
     /// </summary>
     /// <param name="logger">Logger for diagnostic output.</param>
-    /// <exception cref="ArgumentNullException">Thrown when logger is null.</exception>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> is <c>null</c>.</exception>
     /// <remarks>
     /// Uses default <see cref="CacheStoreOptions"/> with stampede prevention enabled.
     /// </remarks>
@@ -272,9 +288,9 @@ public sealed class CacheStore : ICacheStore
     /// Initializes a new instance of the <see cref="CacheStore"/> class with options from DI.
     /// </summary>
     /// <param name="logger">Logger for diagnostic output.</param>
-    /// <param name="options">Configuration options wrapper from DI.</param>
-    /// <exception cref="ArgumentNullException">Thrown when logger is null.</exception>
-    public CacheStore(ILogger<CacheStore> logger, IOptions<CacheStoreOptions> options)
+    /// <param name="options">Configuration options wrapper from DI. If <c>null</c>, uses defaults.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> is <c>null</c>.</exception>
+    public CacheStore(ILogger<CacheStore> logger, IOptions<CacheStoreOptions>? options)
     {
         _logger = logger.AssertNotNull(nameof(logger), "ILogger<CacheStore> reference is null");
         _options = options?.Value ?? new CacheStoreOptions();
@@ -356,6 +372,7 @@ public sealed class CacheStore : ICacheStore
     /// </para>
     /// <para>
     /// <strong>Validation Behavior:</strong>
+    /// Validation callbacks receive a <see cref="CacheValidationContext"/> providing timing information.
     /// If synchronous validation is provided, it is executed in the lock-free fast path.
     /// If validation fails or if async validation is required, the method proceeds to
     /// the locking path where stampede prevention can coordinate recovery.
@@ -366,15 +383,15 @@ public sealed class CacheStore : ICacheStore
         Guid? entityId,
         string? subject,
         Func<Guid, Task<T>>? cacheMissRecovery,
-        Func<T, bool>? syncValidate = null,
-        Func<T, Task<bool>>? asyncValidate = null,
+        Func<T, CacheValidationContext, bool>? syncValidateWithContext = null,
+        Func<T, CacheValidationContext, Task<bool>>? asyncValidateWithContext = null,
         CacheLoadBehavior behavior = CacheLoadBehavior.Default) where T : class
     {
         // Fast path: cache disabled or invalid entity ID
         if (!_enableCache)
         {
             return cacheMissRecovery is not null && entityId.HasValue && entityId.Value != Guid.Empty
-                ? await cacheMissRecovery(entityId.Value)
+                ? await cacheMissRecovery(entityId.Value).ConfigureAwait(false)
                 : default;
         }
 
@@ -385,11 +402,15 @@ public sealed class CacheStore : ICacheStore
         var key = new CacheKey(id, typeof(T), subject);
         var currentTicks = Environment.TickCount64;
 
+        // Determine if async validation is required
+        bool hasAsyncValidation = asyncValidateWithContext is not null;
+
         // Fast path: Try to get from cache first with sync validation only
         // Async validation requires going through the locking path for consistency
-        if (asyncValidate is null)
+        if (!hasAsyncValidation)
         {
-            var cachedResult = TryGetFromCache<T>(key, currentTicks, syncValidate);
+            var cachedResult = TryGetFromCacheWithContext<T>(key, currentTicks, syncValidateWithContext);
+
             if (cachedResult.Found)
             {
                 TriggerProbabilisticCleanup();
@@ -410,11 +431,12 @@ public sealed class CacheStore : ICacheStore
         {
             if (useSingleFlight)
             {
-                return await LoadItemWithSingleFlightAsync(id, key, cacheMissRecovery, syncValidate, asyncValidate);
+                return await LoadItemWithSingleFlightWithContextAsync(
+                    id, key, cacheMissRecovery, syncValidateWithContext, asyncValidateWithContext).ConfigureAwait(false);
             }
             else
             {
-                return await LoadItemWithoutLockAsync(id, key, cacheMissRecovery);
+                return await LoadItemWithoutLockAsync(id, key, cacheMissRecovery).ConfigureAwait(false);
             }
         }
 
@@ -459,8 +481,9 @@ public sealed class CacheStore : ICacheStore
     /// from entries that are never accessed after expiration.
     /// </para>
     /// <para>
-    /// Note: With the new lazy expiry cleanup during access operations, full cleanup
-    /// is less critical but still useful for removing entries that are never accessed again.
+    /// Note: With the lazy expiry cleanup during access operations and probabilistic cleanup,
+    /// full cleanup is less critical but still useful for removing entries that are never 
+    /// accessed again after expiring.
     /// </para>
     /// </remarks>
     public void CleanupCache()
@@ -572,9 +595,9 @@ public sealed class CacheStore : ICacheStore
     private readonly struct CacheLookupResult<T>
     {
         public readonly bool Found;
-        public readonly T Value;
+        public readonly T? Value;
 
-        public CacheLookupResult(bool found, T value)
+        public CacheLookupResult(bool found, T? value)
         {
             Found = found;
             Value = value;
@@ -582,22 +605,22 @@ public sealed class CacheStore : ICacheStore
     }
 
     /// <summary>
-    /// Attempts to get an item from the cache without locking.
+    /// Attempts to get an item from the cache with validation context (without locking).
     /// </summary>
     /// <typeparam name="T">The type of the cached item.</typeparam>
     /// <param name="key">The cache key.</param>
     /// <param name="currentTicks">The current tick count for expiry check.</param>
-    /// <param name="syncValidate">Optional synchronous validation function.</param>
+    /// <param name="syncValidateWithContext">Optional synchronous validation function with context.</param>
     /// <returns>A result indicating whether the item was found and its value.</returns>
     /// <remarks>
     /// This method performs lock-free cache lookup with optional synchronous validation.
     /// If validation is provided and fails, the entry is removed from cache.
     /// Async validation is handled separately in the caller to maintain the fast path.
     /// </remarks>
-    private CacheLookupResult<T> TryGetFromCache<T>(
+    private CacheLookupResult<T> TryGetFromCacheWithContext<T>(
         CacheKey key,
         long currentTicks,
-        Func<T, bool>? syncValidate) where T : class
+        Func<T, CacheValidationContext, bool>? syncValidateWithContext) where T : class
     {
         if (_cache.TryGetValue(key, out var entry))
         {
@@ -605,15 +628,16 @@ public sealed class CacheStore : ICacheStore
             {
                 var data = entry.Data;
 
-                // Type check
+                // Type check - data can be null or must be of type T
                 if (data == null || data is T)
                 {
                     var typedData = data as T;
 
-                    // Synchronous validation if provided
-                    if (syncValidate is not null && typedData is not null)
+                    // Synchronous validation with context if provided
+                    if (syncValidateWithContext is not null && typedData is not null)
                     {
-                        if (!syncValidate(typedData))
+                        var context = new CacheValidationContext(entry.ExpiryTicks, currentTicks, _ttlMs);
+                        if (!syncValidateWithContext(typedData, context))
                         {
                             // Validation failed - remove from cache
                             _cache.TryRemove(key, out _);
@@ -643,23 +667,23 @@ public sealed class CacheStore : ICacheStore
     }
 
     /// <summary>
-    /// Attempts to get an item from cache with async custom validation.
+    /// Attempts to get an item from cache with async validation that includes context.
     /// </summary>
     /// <typeparam name="T">The type of the cached item.</typeparam>
     /// <param name="key">The cache key.</param>
     /// <param name="currentTicks">The current tick count for expiry check.</param>
-    /// <param name="syncValidate">Optional synchronous validation function.</param>
-    /// <param name="asyncValidate">Optional asynchronous validation function.</param>
+    /// <param name="syncValidateWithContext">Optional synchronous validation function with context.</param>
+    /// <param name="asyncValidateWithContext">Optional asynchronous validation function with context.</param>
     /// <returns>A result indicating whether the item was found and its value.</returns>
     /// <remarks>
     /// This method is used during the double-check after lock acquisition.
     /// It performs both sync and async validation if provided.
     /// </remarks>
-    private async ValueTask<CacheLookupResult<T>> TryGetFromCacheAsync<T>(
+    private async ValueTask<CacheLookupResult<T>> TryGetFromCacheWithContextAsync<T>(
         CacheKey key,
         long currentTicks,
-        Func<T, bool>? syncValidate,
-        Func<T, Task<bool>>? asyncValidate) where T : class
+        Func<T, CacheValidationContext, bool>? syncValidateWithContext,
+        Func<T, CacheValidationContext, Task<bool>>? asyncValidateWithContext) where T : class
     {
         if (_cache.TryGetValue(key, out var entry))
         {
@@ -671,11 +695,12 @@ public sealed class CacheStore : ICacheStore
                 if (data == null || data is T)
                 {
                     var typedData = data as T;
+                    var context = new CacheValidationContext(entry.ExpiryTicks, currentTicks, _ttlMs);
 
-                    // Synchronous validation if provided
-                    if (syncValidate is not null && typedData is not null)
+                    // Synchronous validation with context if provided
+                    if (syncValidateWithContext is not null && typedData is not null)
                     {
-                        if (!syncValidate(typedData))
+                        if (!syncValidateWithContext(typedData, context))
                         {
                             // Sync validation failed
                             _cache.TryRemove(key, out _);
@@ -683,10 +708,10 @@ public sealed class CacheStore : ICacheStore
                         }
                     }
 
-                    // Async validation if provided
-                    if (asyncValidate is not null && typedData is not null)
+                    // Async validation with context if provided
+                    if (asyncValidateWithContext is not null && typedData is not null)
                     {
-                        if (!await asyncValidate(typedData))
+                        if (!await asyncValidateWithContext(typedData, context).ConfigureAwait(false))
                         {
                             // Async validation failed
                             _cache.TryRemove(key, out _);
@@ -716,14 +741,14 @@ public sealed class CacheStore : ICacheStore
     }
 
     /// <summary>
-    /// Loads an item using the single-flight pattern (per-key locking).
+    /// Loads an item using the single-flight pattern with validation context.
     /// </summary>
     /// <typeparam name="T">The type of the cached item.</typeparam>
     /// <param name="id">The entity ID.</param>
     /// <param name="key">The cache key.</param>
     /// <param name="cacheMissRecovery">The recovery function to execute on cache miss.</param>
-    /// <param name="syncValidate">Optional synchronous validation function.</param>
-    /// <param name="asyncValidate">Optional asynchronous validation function.</param>
+    /// <param name="syncValidateWithContext">Optional synchronous validation function with context.</param>
+    /// <param name="asyncValidateWithContext">Optional asynchronous validation function with context.</param>
     /// <returns>The cached or recovered item.</returns>
     /// <remarks>
     /// <para>
@@ -740,20 +765,21 @@ public sealed class CacheStore : ICacheStore
     /// would execute the recovery function even though only the first one needs to.
     /// </para>
     /// </remarks>
-    private async Task<T?> LoadItemWithSingleFlightAsync<T>(
+    private async Task<T?> LoadItemWithSingleFlightWithContextAsync<T>(
         Guid id,
         CacheKey key,
         Func<Guid, Task<T>> cacheMissRecovery,
-        Func<T, bool>? syncValidate,
-        Func<T, Task<bool>>? asyncValidate) where T : class
+        Func<T, CacheValidationContext, bool>? syncValidateWithContext,
+        Func<T, CacheValidationContext, Task<bool>>? asyncValidateWithContext) where T : class
     {
         // Acquire per-key lock - only one caller per key proceeds past this point
-        using (await _keyedLock.AcquireAsync(key))
+        using (await _keyedLock.AcquireAsync(key).ConfigureAwait(false))
         {
             var currentTicks = Environment.TickCount64;
 
             // Double-check: Another caller may have populated the cache while we were waiting
-            var cachedResult = await TryGetFromCacheAsync<T>(key, currentTicks, syncValidate, asyncValidate);
+            var cachedResult = await TryGetFromCacheWithContextAsync<T>(
+                key, currentTicks, syncValidateWithContext, asyncValidateWithContext).ConfigureAwait(false);
             if (cachedResult.Found)
             {
                 TriggerProbabilisticCleanup();
@@ -761,7 +787,7 @@ public sealed class CacheStore : ICacheStore
             }
 
             // Still a cache miss - we're the first caller, execute recovery
-            var result = await cacheMissRecovery(id);
+            var result = await cacheMissRecovery(id).ConfigureAwait(false);
             var newEntry = new CacheEntry(result, Environment.TickCount64, _ttlMs);
             _cache.AddOrUpdate(key, newEntry, (_, _) => newEntry);
 
@@ -789,7 +815,7 @@ public sealed class CacheStore : ICacheStore
         CacheKey key,
         Func<Guid, Task<T>> cacheMissRecovery) where T : class
     {
-        var result = await cacheMissRecovery(id);
+        var result = await cacheMissRecovery(id).ConfigureAwait(false);
         var newEntry = new CacheEntry(result, Environment.TickCount64, _ttlMs);
         _cache.AddOrUpdate(key, newEntry, (_, _) => newEntry);
 

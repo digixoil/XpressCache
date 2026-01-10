@@ -27,7 +27,7 @@ namespace XpressCache;
 ///   <item>
 ///     <term>Read-Through Caching</term>
 ///     <description>
-///       Use <see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/> 
+///       Use <see cref="LoadItem{T}"/> 
 ///       with a cache-miss recovery function to automatically populate the cache on first access.
 ///     </description>
 ///   </item>
@@ -72,7 +72,7 @@ namespace XpressCache;
 ///   <item>
 ///     <term>Per-call override</term>
 ///     <description>
-///       <see cref="CacheLoadBehavior"/> parameter in <see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/>
+///       <see cref="CacheLoadBehavior"/> parameter in <see cref="LoadItem{T}"/>
 ///     </description>
 ///   </item>
 /// </list>
@@ -87,9 +87,27 @@ namespace XpressCache;
 /// Renewal is best-effort: under high contention, expiry may not be extended,
 /// but correctness is preserved as expired items are simply re-fetched.
 /// </para>
+/// 
+/// <para>
+/// <strong>Custom Validation with Timing Context:</strong>
+/// </para>
+/// <para>
+/// Validation callbacks receive a <see cref="CacheValidationContext"/> that
+/// provides timing information including:
+/// <list type="bullet">
+///   <item><term>ExpiryTicks</term><description>When the entry is scheduled to expire</description></item>
+///   <item><term>CurrentTicks</term><description>The current time reference</description></item>
+///   <item><term>TimeToExpiry</term><description>Remaining time until expiration</description></item>
+///   <item><term>Age</term><description>Approximate age of the cache entry</description></item>
+///   <item><term>ExpiryProgress</term><description>Progress toward expiration (0.0 to 1.0)</description></item>
+/// </list>
+/// This enables sophisticated time-based validation logic such as proactive refresh
+/// when entries are near expiration.
+/// </para>
 /// </remarks>
 /// <seealso cref="CacheStoreOptions"/>
 /// <seealso cref="CacheLoadBehavior"/>
+/// <seealso cref="CacheValidationContext"/>
 public interface ICacheStore
 {
     /// <summary>
@@ -99,7 +117,7 @@ public interface ICacheStore
     /// <para>
     /// When set to <c>false</c>, all cache operations become no-ops:
     /// <list type="bullet">
-    ///   <item><see cref="LoadItem{T}(Guid?, string?, Func{Guid, Task{T}}?, Func{T, bool}?, Func{T, Task{bool}}?, CacheLoadBehavior)"/> will always invoke the cache-miss recovery function</item>
+    ///   <item><see cref="LoadItem{T}"/> will always invoke the cache-miss recovery function</item>
     ///   <item><see cref="SetItem{T}"/> will do nothing</item>
     ///   <item><see cref="GetCachedItems{T}"/> will return <c>null</c></item>
     /// </list>
@@ -111,24 +129,34 @@ public interface ICacheStore
     bool EnableCache { get; set; }
 
     /// <summary>
-    /// Loads an item from the cache, or retrieves it using the recovery function if not cached.
+    /// Loads an item from the cache with validation context, or retrieves it using the recovery function if not cached.
     /// </summary>
-    /// <typeparam name="T">The type of the cached item.</typeparam>
-    /// <param name="entityId">The unique identifier of the entity.</param>
-    /// <param name="subject">An optional subject for additional categorization (null is normalized to empty string).</param>
+    /// <typeparam name="T">The type of the cached item. Must be a reference type.</typeparam>
+    /// <param name="entityId">
+    /// The unique identifier of the entity. If <c>null</c> or <see cref="Guid.Empty"/>,
+
+    /// returns <c>default</c> without executing recovery.
+    /// </param>
+    /// <param name="subject">
+    /// An optional subject for additional categorization. <c>null</c> is normalized to empty string.
+    /// Items with the same entity ID but different subjects are cached separately.
+    /// </param>
     /// <param name="cacheMissRecovery">
-    /// A function to retrieve the item if not found in cache. 
+    /// A function to retrieve the item if not found in cache.
     /// Can be <c>null</c> if only checking cache without recovery.
     /// </param>
-    /// <param name="syncValidate">
-    /// An optional synchronous validation function to verify the cached item is still valid.
-    /// If this returns <c>false</c>, the cache-miss recovery function is invoked.
-    /// Prefer this over async validation for better performance.
+    /// <param name="syncValidateWithContext">
+    /// An optional synchronous validation function that receives both the cached item and a
+    /// <see cref="CacheValidationContext"/> with timing information. Returns <c>false</c> to
+    /// invalidate the cached item and trigger recovery.
+    /// This validator executes in the lock-free fast path for optimal performance.
+    /// Prefer this over <paramref name="asyncValidateWithContext"/> when validation doesn't require async operations.
     /// </param>
-    /// <param name="asyncValidate">
-    /// An optional asynchronous validation function to verify the cached item is still valid.
-    /// If this returns <c>false</c>, the cache-miss recovery function is invoked.
-    /// Use only when validation requires async operations (e.g., database checks).
+    /// <param name="asyncValidateWithContext">
+    /// An optional asynchronous validation function that receives both the cached item and a
+    /// <see cref="CacheValidationContext"/> with timing information.
+    /// Use only when validation requires async operations (e.g., database or API checks).
+    /// When both validators are provided, <paramref name="syncValidateWithContext"/> runs first.
     /// </param>
     /// <param name="behavior">
     /// Specifies the cache loading behavior for stampede prevention.
@@ -136,7 +164,12 @@ public interface ICacheStore
     /// <see cref="CacheStoreOptions.PreventCacheStampedeByDefault"/>.
     /// </param>
     /// <returns>
-    /// The cached item, the recovered item, or <c>default</c> if not found and no recovery function provided.
+    /// The cached item, the recovered item, or <c>default</c> if:
+    /// <list type="bullet">
+    ///   <item><paramref name="entityId"/> is <c>null</c> or <see cref="Guid.Empty"/></item>
+    ///   <item>Item not found and no <paramref name="cacheMissRecovery"/> provided</item>
+    ///   <item>Cache is disabled (<see cref="EnableCache"/> is <c>false</c>)</item>
+    /// </list>
     /// </returns>
     /// <remarks>
     /// <para>
@@ -144,10 +177,31 @@ public interface ICacheStore
     /// and cache stampede prevention.
     /// </para>
     /// <para>
+    /// <strong>Validation Context:</strong>
+    /// </para>
+    /// <para>
+    /// The validation context provides timing information enabling sophisticated
+    /// time-based validation logic such as:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Proactive refresh when entries are near expiration</item>
+    ///   <item>Invalidating entries based on age rather than just TTL</item>
+    ///   <item>Implementing custom staleness policies</item>
+    /// </list>
+    /// <para>
+    /// <strong>Example - Proactive refresh at 75% TTL:</strong>
+    /// </para>
+    /// <code>
+    /// var item = await cache.LoadItem&lt;User&gt;(
+    ///     userId, "users", LoadUserAsync,
+    ///     syncValidateWithContext: (user, ctx) => ctx.ExpiryProgress &lt; 0.75
+    /// );
+    /// </code>
+    /// <para>
     /// <strong>Validation Priority:</strong>
     /// </para>
     /// <para>
-    /// If both <paramref name="syncValidate"/> and <paramref name="asyncValidate"/> are provided,
+    /// If both <paramref name="syncValidateWithContext"/> and <paramref name="asyncValidateWithContext"/> are provided,
     /// the synchronous validator is checked first. If it passes, the async validator is then checked.
     /// For best performance, use only synchronous validation when possible.
     /// </para>
@@ -159,7 +213,7 @@ public interface ICacheStore
     /// <see cref="CacheStoreOptions.PreventCacheStampedeByDefault"/>), this method uses the
     /// double-check locking pattern:
     /// <list type="number">
-    ///   <item>Check cache (fast path)</item>
+    ///   <item>Check cache (fast path, no lock)</item>
     ///   <item>If miss, acquire per-key lock</item>
     ///   <item>Check cache again (another caller may have populated it)</item>
     ///   <item>If still miss, execute recovery and store result</item>
@@ -167,30 +221,45 @@ public interface ICacheStore
     /// </list>
     /// </para>
     /// <para>
-    /// Returns <see cref="ValueTask{T}"/> to avoid Task allocation on synchronous cache hits,
+    /// <strong>ValueTask Return:</strong>
+    /// </para>
+    /// <para>
+    /// Returns <see cref="ValueTask{T}"/> to avoid <see cref="Task"/> allocation on synchronous cache hits,
     /// improving performance for the common case where items are found in cache.
     /// </para>
     /// </remarks>
     /// <seealso cref="CacheLoadBehavior"/>
     /// <seealso cref="CacheStoreOptions.PreventCacheStampedeByDefault"/>
+    /// <seealso cref="CacheValidationContext"/>
     ValueTask<T?> LoadItem<T>(
-        Guid? entityId, 
-        string? subject, 
-        Func<Guid, Task<T>>? cacheMissRecovery, 
-        Func<T, bool>? syncValidate = null,
-        Func<T, Task<bool>>? asyncValidate = null,
+        Guid? entityId,
+        string? subject,
+        Func<Guid, Task<T>>? cacheMissRecovery,
+        Func<T, CacheValidationContext, bool>? syncValidateWithContext = null,
+        Func<T, CacheValidationContext, Task<bool>>? asyncValidateWithContext = null,
         CacheLoadBehavior behavior = CacheLoadBehavior.Default) where T : class;
 
     /// <summary>
     /// Stores an item in the cache.
     /// </summary>
-    /// <typeparam name="T">The type of the item to cache.</typeparam>
-    /// <param name="entityId">The unique identifier of the entity.</param>
-    /// <param name="subject">An optional subject for additional categorization (null is normalized to empty string).</param>
-    /// <param name="item">The item to cache.</param>
-    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <typeparam name="T">The type of the item to cache. Must be a reference type.</typeparam>
+    /// <param name="entityId">
+    /// The unique identifier of the entity. If <c>null</c> or <see cref="Guid.Empty"/>,
+
+    /// the operation is a no-op.
+    /// </param>
+    /// <param name="subject">
+    /// An optional subject for additional categorization. <c>null</c> is normalized to empty string.
+    /// </param>
+    /// <param name="item">The item to cache. Can be <c>null</c>.</param>
+    /// <returns>A completed task.</returns>
     /// <remarks>
-    /// If an item with the same key already exists, it is replaced with the new item.
+    /// <para>
+    /// If an item with the same key (entity ID + type + subject) already exists, it is replaced.
+    /// </para>
+    /// <para>
+    /// This operation is a no-op if <see cref="EnableCache"/> is <c>false</c>.
+    /// </para>
     /// </remarks>
     Task SetItem<T>(Guid? entityId, string? subject, T item) where T : class;
 
@@ -209,7 +278,8 @@ public interface ICacheStore
     /// memory leaks from entries that are never accessed after expiration.
     /// </para>
     /// <para>
-    /// Note: The implementation also performs lazy expiry cleanup during access operations,
+    /// Note: The implementation also performs lazy expiry cleanup during access operations
+    /// and probabilistic cleanup when the cache exceeds the configured threshold,
     /// so calling this method frequently is not strictly necessary.
     /// </para>
     /// </remarks>
@@ -219,24 +289,31 @@ public interface ICacheStore
     /// Removes a specific item from the cache.
     /// </summary>
     /// <typeparam name="T">The type of the item to remove.</typeparam>
-    /// <param name="entityId">The unique identifier of the entity.</param>
-    /// <param name="subject">The subject that was used when storing the item (null is normalized to empty string).</param>
+    /// <param name="entityId">
+    /// The unique identifier of the entity. If <c>null</c>, returns <c>false</c>.
+    /// </param>
+    /// <param name="subject">
+    /// The subject that was used when storing the item. <c>null</c> is normalized to empty string.
+    /// </param>
     /// <returns><c>true</c> if the item was found and removed; otherwise, <c>false</c>.</returns>
     bool RemoveItem<T>(Guid? entityId, string? subject);
 
     /// <summary>
     /// Gets all cached items of a specific type and subject.
     /// </summary>
-    /// <typeparam name="T">The type of items to retrieve.</typeparam>
-    /// <param name="subject">The subject to filter by (null is normalized to empty string).</param>
+    /// <typeparam name="T">The type of items to retrieve. Must be a reference type.</typeparam>
+    /// <param name="subject">
+    /// The subject to filter by. <c>null</c> is normalized to empty string.
+    /// </param>
     /// <returns>
     /// A list of all matching cached items, or <c>null</c> if the cache is disabled.
+    /// The list may be empty if no items match.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// This operation is O(n) where n is the total number of cache entries.
-    /// For large caches with frequent calls to this method, consider alternative
-    /// data structures with secondary indices.
+    /// <strong>Performance Warning:</strong> This operation is O(n) where n is the total number 
+    /// of cache entries. For large caches with frequent calls to this method, consider 
+    /// alternative data structures with secondary indices.
     /// </para>
     /// <para>
     /// Expired entries encountered during the scan are opportunistically removed.

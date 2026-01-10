@@ -190,6 +190,7 @@ public class AdvancedScenariosTests
 
         // Assert
         Assert.Equal(1, recoveryCallCount);
+        Assert.NotNull(result);
         Assert.Equal("Fresh", result.Name);
     }
 
@@ -268,7 +269,7 @@ public class AdvancedScenariosTests
     }
 
     [Fact]
-    public async Task GetCachedItems_WhenCacheDisabled_ReturnsNull()
+    public void GetCachedItems_WhenCacheDisabled_ReturnsNull()
     {
         // Arrange
         var cache = CreateCache();
@@ -302,13 +303,16 @@ public class AdvancedScenariosTests
         var otherItems = cache.GetCachedItems<OtherEntity>("subject1");
 
         // Assert
+        Assert.NotNull(subject1Items);
         Assert.Equal(2, subject1Items.Count);
         Assert.Contains(subject1Items, e => e.Name == "A");
         Assert.Contains(subject1Items, e => e.Name == "B");
 
+        Assert.NotNull(subject2Items);
         Assert.Single(subject2Items);
         Assert.Equal("C", subject2Items[0].Name);
 
+        Assert.NotNull(otherItems);
         Assert.Single(otherItems);
         Assert.Equal(1, otherItems[0].Value);
     }
@@ -338,6 +342,7 @@ public class AdvancedScenariosTests
         var items = cache.GetCachedItems<TestEntity>("test");
 
         // Assert
+        Assert.NotNull(items);
         Assert.Single(items);
         Assert.Equal("Fresh", items[0].Name);
     }
@@ -359,6 +364,8 @@ public class AdvancedScenariosTests
         var testItems = cache.GetCachedItems<TestEntity>("test");
         var otherItems = cache.GetCachedItems<TestEntity>("other");
 
+        Assert.NotNull(testItems);
+        Assert.NotNull(otherItems);
         Assert.Empty(testItems);
         Assert.Empty(otherItems);
     }
@@ -378,7 +385,7 @@ public class AdvancedScenariosTests
             cacheMissRecovery: _ =>
             {
                 callCount++;
-                return Task.FromResult<TestEntity>(null);
+                return Task.FromResult<TestEntity>(null!);
             }
         );
 
@@ -389,7 +396,7 @@ public class AdvancedScenariosTests
             cacheMissRecovery: _ =>
             {
                 callCount++;
-                return Task.FromResult<TestEntity>(null);
+                return Task.FromResult<TestEntity>(null!);
             }
         );
 
@@ -410,7 +417,7 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Cached" });
 
-        // Act - Load with sync validation that passes
+        // Act - Load with sync validation that passes (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
@@ -419,7 +426,7 @@ public class AdvancedScenariosTests
                 recoveryCount++;
                 return new TestEntity { Id = id, Name = "Recovery" };
             },
-            syncValidate: (item) =>
+            syncValidateWithContext: (item, ctx) =>
             {
                 validateCount++;
                 Assert.Equal("Cached", item?.Name);
@@ -445,7 +452,7 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Old" });
 
-        // Act - Load with sync validation that fails
+        // Act - Load with sync validation that fails (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
@@ -454,7 +461,7 @@ public class AdvancedScenariosTests
                 recoveryCount++;
                 return new TestEntity { Id = id, Name = "New" };
             },
-            syncValidate: (item) =>
+            syncValidateWithContext: (item, ctx) =>
             {
                 validateCount++;
                 return false; // Validation fails
@@ -479,7 +486,7 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Cached" });
 
-        // Act - Load with async validation that passes
+        // Act - Load with async validation that passes (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
@@ -488,7 +495,7 @@ public class AdvancedScenariosTests
                 recoveryCount++;
                 return new TestEntity { Id = id, Name = "Recovery" };
             },
-            asyncValidate: async (item) =>
+            asyncValidateWithContext: async (item, ctx) =>
             {
                 validateCount++;
                 await Task.CompletedTask;
@@ -514,7 +521,7 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Old" });
 
-        // Act - Load with async validation that fails
+        // Act - Load with async validation that fails (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
@@ -523,7 +530,7 @@ public class AdvancedScenariosTests
                 recoveryCount++;
                 return new TestEntity { Id = id, Name = "New" };
             },
-            asyncValidate: async (item) =>
+            asyncValidateWithContext: async (item, ctx) =>
             {
                 await Task.CompletedTask;
                 return false; // Always fail validation
@@ -547,17 +554,17 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Test" });
 
-        // Act - Sync validation fails, so async should not be called
+        // Act - Sync validation fails, so async should not be called (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
             cacheMissRecovery: async (id) => new TestEntity { Id = id, Name = "Recovery" },
-            syncValidate: (item) =>
+            syncValidateWithContext: (item, ctx) =>
             {
                 syncValidateCount++;
                 return false; // Fail sync validation
             },
-            asyncValidate: async (item) =>
+            asyncValidateWithContext: async (item, ctx) =>
             {
                 asyncValidateCount++;
                 await Task.CompletedTask;
@@ -583,7 +590,7 @@ public class AdvancedScenariosTests
 
         await cache.SetItem(entityId, "test", new TestEntity { Id = entityId, Name = "Cached" });
 
-        // Act - Both validations pass
+        // Act - Both validations pass (using CacheValidationContext)
         var result = await cache.LoadItem<TestEntity>(
             entityId: entityId,
             subject: "test",
@@ -592,12 +599,12 @@ public class AdvancedScenariosTests
                 recoveryCount++;
                 return new TestEntity { Id = id, Name = "Recovery" };
             },
-            syncValidate: (item) =>
+            syncValidateWithContext: (item, ctx) =>
             {
                 syncValidateCount++;
                 return true; // Pass sync validation
             },
-            asyncValidate: async (item) =>
+            asyncValidateWithContext: async (item, ctx) =>
             {
                 asyncValidateCount++;
                 await Task.CompletedTask;
@@ -646,7 +653,7 @@ public class AdvancedScenariosTests
                     }
                     return new TestEntity { Id = id, Name = "New" };
                 },
-                syncValidate: (item) => false // Always fail - force recovery
+                syncValidateWithContext: (item, ctx) => false // Always fail - force recovery
             ).AsTask()
         ).ToArray();
 
@@ -700,7 +707,7 @@ public class AdvancedScenariosTests
                     }
                     return new TestEntity { Id = id, Name = "New" };
                 },
-                asyncValidate: async (item) =>
+                asyncValidateWithContext: async (item, ctx) =>
                 {
                     Interlocked.Increment(ref validateCount);
                     await Task.CompletedTask;
@@ -755,7 +762,7 @@ public class AdvancedScenariosTests
                     }
                     return new TestEntity { Id = id, Name = "Fresh", IsValid = true };
                 },
-                asyncValidate: async (item) =>
+                asyncValidateWithContext: async (item, ctx) =>
                 {
                     await Task.CompletedTask;
                     return item.IsValid; // Validate the recovered item

@@ -98,8 +98,8 @@ public class CacheStoreTests
         var result2 = await _cache.LoadItem<TestEntity>(entityId, "subject2", _ => Task.FromResult(subject2Data));
 
         // Assert
-        Assert.Equal("Subject1", result1.Name);
-        Assert.Equal("Subject2", result2.Name);
+        Assert.Equal("Subject1", result1?.Name);
+        Assert.Equal("Subject2", result2?.Name);
     }
 
     [Fact]
@@ -113,8 +113,8 @@ public class CacheStoreTests
         var other = await _cache.LoadItem<OtherEntity>(entityId, "subject", _ => Task.FromResult(new OtherEntity { Id = entityId, Value = 42 }));
 
         // Assert
-        Assert.Equal("Entity", entity.Name);
-        Assert.Equal(42, other.Value);
+        Assert.Equal("Entity", entity?.Name);
+        Assert.Equal(42, other?.Value);
     }
 
     [Fact]
@@ -186,7 +186,7 @@ public class CacheStoreTests
 
         // Assert
         Assert.Equal(0, recoveryCount); // Should hit cache
-        Assert.Equal(item.Name, result.Name);
+        Assert.Equal(item.Name, result?.Name);
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public class CacheStoreTests
         var result = await _cache.LoadItem<TestEntity>(entityId, "subject", null);
 
         // Assert
-        Assert.Equal("Updated", result.Name);
+        Assert.Equal("Updated", result?.Name);
     }
 
     [Fact]
@@ -235,7 +235,7 @@ public class CacheStoreTests
         // Assert
         Assert.True(removed);
         Assert.Equal(1, recoveryCount); // Had to call recovery
-        Assert.Equal("Recovered", result.Name);
+        Assert.Equal("Recovered", result?.Name);
     }
 
     [Fact]

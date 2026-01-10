@@ -10,6 +10,7 @@ This document explains the internal architecture, design decisions, and implemen
 - [Data Structures](#data-structures)
 - [Threading Model](#threading-model)
 - [Cache Stampede Prevention](#cache-stampede-prevention)
+- [Validation with Timing Context](#validation-with-timing-context)
 - [Expiration Strategy](#expiration-strategy)
 - [Memory Management](#memory-management)
 - [Performance Optimizations](#performance-optimizations)
@@ -27,6 +28,7 @@ XpressCache is a high-performance, thread-safe in-memory cache designed to solve
 3. **Prevent cache stampede** - Single-flight pattern for expensive operations
 4. **Sliding expiration** - Keep frequently accessed items cached
 5. **Automatic cleanup** - Prevent unbounded memory growth
+6. **Timing-aware validation** - Enable sophisticated refresh strategies
 
 ---
 
@@ -35,34 +37,44 @@ XpressCache is a high-performance, thread-safe in-memory cache designed to solve
 ### Component Diagram
 
 ```
-???????????????????????????????????????????????
-?           ICacheStore Interface             ?
-?  (Public API for cache operations)          ?
-???????????????????????????????????????????????
-                 ? implements
-                 ?
-???????????????????????????????????????????????
-?            CacheStore Class                 ?
-?  ????????????????????????????????????????   ?
-?  ?  ConcurrentDictionary<CacheKey,      ?   ?
-?  ?                       CacheEntry>    ?   ?
-?  ?  (Main cache storage)                ?   ?
-?  ????????????????????????????????????????   ?
-?  ????????????????????????????????????????   ?
-?  ?  KeyedAsyncLock<CacheKey>            ?   ?
-?  ?  (Per-key locking)                   ?   ?
-?  ????????????????????????????????????????   ?
-???????????????????????????????????????????????
-         ?                    ?
-         ?                    ?
-         ?                    ?
-???????????????????  ????????????????????
-?   CacheKey      ?  ?   CacheEntry     ?
-?   (struct)      ?  ?   (sealed class) ?
-?   - EntityId    ?  ?   - Data         ?
-?   - Type        ?  ?   - ExpiryTicks  ?
-?   - Subject     ?  ????????????????????
-???????????????????
+┌───────────────────────────────────────────────┐
+│           ICacheStore Interface               │
+│  (Public API for cache operations)            │
+└───────────────────────────────────────────────┘
+                 │ implements
+                 ▼
+┌───────────────────────────────────────────────┐
+│            CacheStore Class                   │
+│  ┌────────────────────────────────────────┐   │
+│  │  ConcurrentDictionary<CacheKey,        │   │
+│  │                       CacheEntry>      │   │
+│  │  (Main cache storage)                  │   │
+│  └────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────┐   │
+│  │  KeyedAsyncLock<CacheKey>              │   │
+│  │  (Per-key locking)                     │   │
+│  └────────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+         │                    │
+         ▼                    ▼
+┌───────────────────┐  ┌────────────────────┐
+│   CacheKey        │  │   CacheEntry       │
+│   (struct)        │  │   (sealed class)   │
+│   - EntityId      │  │   - Data           │
+│   - Type          │  │   - ExpiryTicks    │
+│   - Subject       │  └────────────────────┘
+└───────────────────┘           │
+                                ▼
+                   ┌────────────────────────┐
+                   │ CacheValidationContext │
+                   │   (readonly struct)    │
+                   │   - ExpiryTicks        │
+                   │   - CurrentTicks       │
+                   │   - TtlMs              │
+                   │   - TimeToExpiry       │
+                   │   - Age                │
+                   │   - ExpiryProgress     │
+                   └────────────────────────┘
 ```
 
 ### CacheStore
@@ -74,6 +86,7 @@ The main implementation of `ICacheStore`. Coordinates all cache operations.
 - Coordinate single-flight locking via `KeyedAsyncLock`
 - Handle expiration and renewal
 - Trigger cleanup operations
+- Provide timing context for validation
 
 ### CacheKey (struct)
 
@@ -107,7 +120,7 @@ Immutable container for cached data with expiration time.
 sealed class CacheEntry
 {
     readonly long ExpiryTicks;
-    readonly object Data;
+    readonly object? Data;
 }
 ```
 
@@ -115,6 +128,29 @@ sealed class CacheEntry
 - Thread-safe reads without locking
 - Atomic replacement via `ConcurrentDictionary.TryUpdate()`
 - Simplifies reasoning about concurrency
+
+### CacheValidationContext (readonly struct)
+
+Value-type container for timing information during validation.
+
+**Design:**
+```csharp
+readonly struct CacheValidationContext
+{
+    long ExpiryTicks;      // When the entry expires
+    long CurrentTicks;     // Current time reference
+    long TtlMs;            // Configured TTL
+    TimeSpan TimeToExpiry; // Computed: time remaining
+    TimeSpan Age;          // Computed: approximate age
+    double ExpiryProgress; // Computed: 0.0 to 1.0
+}
+```
+
+**Why provided to validation?**
+- Enables proactive refresh strategies
+- Allows time-based business logic
+- Supports graceful cache warming patterns
+- No additional lookups required during validation
 
 ### KeyedAsyncLock&lt;TKey&gt;
 
@@ -160,13 +196,14 @@ Thread C: Acquires lock for Key1
 
 **Benefit:** Horizontal scalability - locks don't become bottleneck
 
-### 3. Value-Type Keys
+### 3. Value-Type Keys and Context
 
-**Principle:** Avoid allocations for cache key structures.
+**Principle:** Avoid allocations for frequently-used structures.
 
 **Implementation:**
 - `CacheKey` is a `readonly struct`
-- Passed by reference in `ConcurrentDictionary`
+- `CacheValidationContext` is a `readonly struct`
+- Passed by value, no heap allocation
 
 **Benefit:** Reduced GC pressure, better memory locality
 
@@ -190,7 +227,18 @@ Thread C: Acquires lock for Key1
 - Probabilistic cleanup when size threshold exceeded
 - Manual cleanup available but optional
 
-**Benefit:** Amortized cleanup cost, no dedicated cleanup thread needed
+**Benefit:** Amortized cleanup cost, no dedicated cleanup thread
+
+### 6. Timing-Aware Validation
+
+**Principle:** Provide rich context for validation decisions.
+
+**Implementation:**
+- `CacheValidationContext` with computed timing properties
+- Enables proactive refresh patterns
+- Supports complex staleness policies
+
+**Benefit:** Fine-grained control over cache freshness
 
 ---
 
@@ -202,23 +250,40 @@ Thread C: Acquires lock for Key1
 ConcurrentDictionary<CacheKey, CacheEntry>
 
 Key Structure (value type - no heap allocation):
-????????????????????????????????????????
-? EntityId (Guid - 16 bytes)           ?
-? Type (reference - 8 bytes)           ?
-? Subject (string reference - 8 bytes) ?
-????????????????????????????????????????
+┌──────────────────────────────────────────┐
+│ EntityId (Guid - 16 bytes)               │
+│ Type (reference - 8 bytes)               │
+│ Subject (string reference - 8 bytes)     │
+└──────────────────────────────────────────┘
 Total: 32 bytes on stack
 
 Value Structure (reference type):
-???????????????????????????????????
-? CacheEntry (sealed class)       ?
-? ?? Object header (16 bytes)     ?
-? ?? ExpiryTicks (8 bytes)        ?
-? ?? Data (8 bytes reference)     ?
-???????????????????????????????????
+┌─────────────────────────────────────┐
+│ CacheEntry (sealed class)           │
+│ ├─ Object header (16 bytes)         │
+│ ├─ ExpiryTicks (8 bytes)            │
+│ └─ Data (8 bytes reference)         │
+└─────────────────────────────────────┘
 Total: ~32 bytes + data size
 
 Dictionary overhead: ~16 bytes per entry
+```
+
+### CacheValidationContext Layout
+
+```
+CacheValidationContext (value type - stack allocated):
+┌──────────────────────────────────────────┐
+│ ExpiryTicks (long - 8 bytes)             │
+│ CurrentTicks (long - 8 bytes)            │
+│ TtlMs (long - 8 bytes)                   │
+└──────────────────────────────────────────┘
+Total: 24 bytes on stack
+
+Computed properties (no storage):
+- TimeToExpiry: calculated from ExpiryTicks - CurrentTicks
+- Age: calculated from TtlMs - (ExpiryTicks - CurrentTicks)
+- ExpiryProgress: calculated as Age / TtlMs
 ```
 
 ### Memory per Entry
@@ -240,7 +305,7 @@ class User
 }
 
 Total cache memory for one User entry:
-48 (overhead) + 24 (User object) + Name string ? 80+ bytes
+48 (overhead) + 24 (User object) + Name string ≈ 80+ bytes
 ```
 
 ---
@@ -257,8 +322,10 @@ All public methods are thread-safe and can be called concurrently.
 ```
 1. ConcurrentDictionary.TryGetValue() - lock-free
 2. Check expiration - lock-free
-3. TryUpdate() for renewal - lock-free (may fail, that's OK)
-4. Return data
+3. Create CacheValidationContext - stack allocation only
+4. Execute validation (sync) - lock-free
+5. TryUpdate() for renewal - lock-free (may fail, that's OK)
+6. Return data
 ```
 
 **Write Path (Cache Miss with Stampede Prevention):**
@@ -267,9 +334,10 @@ All public methods are thread-safe and can be called concurrently.
 2. Cache miss detected
 3. Acquire per-key lock (KeyedAsyncLock)
 4. Double-check cache - lock-free
-5. If still miss, execute recovery
-6. ConcurrentDictionary.AddOrUpdate() - lock-free
-7. Release lock
+5. If found, execute validation with context
+6. If still miss, execute recovery
+7. ConcurrentDictionary.AddOrUpdate() - lock-free
+8. Release lock
 ```
 
 **Write Path (Cache Miss without Stampede Prevention):**
@@ -285,6 +353,8 @@ All public methods are thread-safe and can be called concurrently.
 | Operation | Lock Level | Contention |
 |-----------|------------|------------|
 | Cache hit | None | None |
+| Cache hit with sync validation | None | None |
+| Cache hit with async validation | Per-key | Serialized per key |
 | Cache miss (different keys) | Per-key | None |
 | Cache miss (same key, stampede on) | Per-key | Serialized per key |
 | Cache miss (same key, stampede off) | None | Parallel execution |
@@ -300,12 +370,12 @@ All public methods are thread-safe and can be called concurrently.
 ### The Problem
 
 ```
-Time  ?  T0    T1    T2    T3    T4
-         ?     ?     ?     ?     ?
-Req 1 ??????????????????????????????? DB Query
-Req 2 ??????????????????????????????? DB Query (duplicate!)
-Req 3 ??????????????????????????????? DB Query (duplicate!)
-Req 4 ??????????????????????????????? DB Query (duplicate!)
+Time  →  T0    T1    T2    T3    T4
+         │     │     │     │     │
+Req 1 ───┼─────────────────┼─────── DB Query
+Req 2 ───┼─────────────────┼─────── DB Query (duplicate!)
+Req 3 ───┼─────────────────┼─────── DB Query (duplicate!)
+Req 4 ───┼─────────────────┼─────── DB Query (duplicate!)
 
 All requests miss cache, all query database!
 ```
@@ -313,12 +383,12 @@ All requests miss cache, all query database!
 ### The Solution: Single-Flight Pattern
 
 ```
-Time  ?  T0    T1    T2    T3    T4
-         ?     ?     ?     ?     ?
-Req 1 ????? LOCK ???? DB Query ?????? Return
-Req 2 ????? WAIT ?????????? GET CACHED ??? Return
-Req 3 ????? WAIT ?????????? GET CACHED ??? Return
-Req 4 ????? WAIT ?????????? GET CACHED ??? Return
+Time  →  T0     T1    T2    T3    T4
+         │      │     │     │     │
+Req 1 ───┼ LOCK ├──── DB Query ───┼── Return
+Req 2 ───┼ WAIT ├───────────┼─────┼── GET CACHED ── Return
+Req 3 ───┼ WAIT ├───────────┼─────┼── GET CACHED ── Return
+Req 4 ───┼ WAIT ├───────────┼─────┼── GET CACHED ── Return
 
 Only Req 1 queries database!
 ```
@@ -366,6 +436,92 @@ This prevents unbounded growth of the lock dictionary.
 
 ---
 
+## Validation with Timing Context
+
+### Purpose
+
+The `CacheValidationContext` enables sophisticated validation strategies that consider not just the cached data, but also its temporal characteristics.
+
+### Available Context
+
+```csharp
+public readonly struct CacheValidationContext
+{
+    // Raw timing data
+    public long ExpiryTicks { get; }    // Absolute expiry time
+    public long CurrentTicks { get; }   // Current time reference
+    public long TtlMs { get; }          // Configured TTL
+    
+    // Computed helpers
+    public TimeSpan TimeToExpiry { get; } // Time until expiry
+    public TimeSpan Age { get; }          // Time since creation/renewal
+    public double ExpiryProgress { get; } // 0.0 (fresh) to 1.0 (expired)
+}
+```
+
+### Common Validation Patterns
+
+**1. Proactive Refresh (Percentage-Based)**
+```csharp
+// Refresh when 75% of TTL has elapsed
+syncValidateWithContext: (item, ctx) => ctx.ExpiryProgress < 0.75
+```
+
+**2. Proactive Refresh (Time-Based)**
+```csharp
+// Refresh items with less than 30 seconds remaining
+syncValidateWithContext: (item, ctx) => ctx.TimeToExpiry.TotalSeconds > 30
+```
+
+**3. Age-Based Invalidation**
+```csharp
+// Refresh items older than 2 minutes regardless of TTL
+syncValidateWithContext: (item, ctx) => ctx.Age.TotalMinutes < 2
+```
+
+**4. Conditional Async Validation**
+```csharp
+// Only perform expensive validation when near expiry
+asyncValidateWithContext: async (item, ctx) =>
+{
+    if (ctx.ExpiryProgress > 0.8)
+        return await ExpensiveValidationAsync(item);
+    return true;
+}
+```
+
+### Validation Flow
+
+```
+┌───────────────────────────────────────────────────┐
+│               Cache Hit Detected                  │
+└───────────────────────────────────────────────────┘
+                        │
+                        ▼
+        ┌────────────────────────────────┐
+        │  Create CacheValidationContext │
+        │  (stack allocation, no heap)   │
+        └────────────────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────┐
+        │   syncValidate(item, ctx)?    │───No──▶ Cache Hit, Return
+        └───────────────────────────────┘
+                        │ Yes (with context)
+                        ▼
+        ┌───────────────────────────────┐
+        │     Validation Passes?        │
+        └───────────────────────────────┘
+               │                │
+              Yes              No
+               │                │
+               ▼                ▼
+        Cache Hit,      Remove from cache,
+        Return          Execute recovery
+```
+
+---
+
 ## Expiration Strategy
 
 ### Sliding Expiration
@@ -373,11 +529,11 @@ This prevents unbounded growth of the lock dictionary.
 Every cache hit extends the expiration time (best-effort).
 
 ```
-Initial:   [Entry created] ????????????? [Expires in 10 min]
+Initial:   [Entry created] ──────────────▶ [Expires in 10 min]
                                       
-Access 1:  [Entry hit at T+5] ??????????? [Expires in T+5+10 = 15 min]
+Access 1:  [Entry hit at T+5] ───────────▶ [Expires in T+5+10 = 15 min]
 
-Access 2:  [Entry hit at T+12] ?????????? [Expires in T+12+10 = 22 min]
+Access 2:  [Entry hit at T+12] ──────────▶ [Expires in T+12+10 = 22 min]
 ```
 
 ### Best-Effort Renewal
@@ -470,7 +626,7 @@ Memory = (48 bytes + data size) × total entries ever cached
 
 **With probabilistic cleanup:**
 ```
-Memory ? (48 bytes + data size) × active entries
+Memory ≈ (48 bytes + data size) × active entries
 ```
 
 **Recommendation:**
@@ -484,12 +640,12 @@ Memory ? (48 bytes + data size) × active entries
 ### 1. ValueTask for Cache Hits
 
 ```csharp
-public ValueTask<T> LoadItem<T>(...)
+public ValueTask<T?> LoadItem<T>(...)
 ```
 
 **Why?**
 - Cache hits return synchronously (data already in memory)
-- `ValueTask<T>` avoids Task allocation
+- `ValueTask<T?>` avoids Task allocation
 - Falls back to `Task<T>` only for cache misses
 
 **Benchmark:**
@@ -498,14 +654,15 @@ Cache Hit with Task<T>:      45 ns/op, 40 B allocated
 Cache Hit with ValueTask<T>: 12 ns/op,  0 B allocated
 ```
 
-### 2. Struct-Based Cache Keys
+### 2. Struct-Based Keys and Context
 
 ```csharp
 readonly struct CacheKey
+readonly struct CacheValidationContext
 ```
 
 **Why?**
-- No heap allocation for key object
+- No heap allocation for these structures
 - Better CPU cache locality
 - Custom equality and hash code
 
@@ -527,6 +684,7 @@ public bool IsExpired(long currentTicks)
 - `CacheEntry.Renew()`
 - `CacheKey.Equals()`
 - Cleanup trigger logic
+- `CacheValidationContext` property getters
 
 **Why?**
 - Eliminates method call overhead
@@ -539,7 +697,7 @@ public bool IsExpired(long currentTicks)
 sealed class CacheEntry
 {
     readonly long ExpiryTicks;
-    readonly object Data;
+    readonly object? Data;
 }
 ```
 
@@ -598,31 +756,33 @@ new ConcurrentDictionary<CacheKey, CacheEntry>(
 
 | Feature | XpressCache | IMemoryCache |
 |---------|-------------|--------------|
-| Stampede prevention | ? Built-in | ? Manual |
-| Thread-safe | ? Yes | ? Yes |
-| Async operations | ? Full support | ?? Limited |
-| Per-key locking | ? Yes | ? No |
-| Value-type keys | ? Yes | ? No |
-| Dependency injection | ? Yes | ? Yes |
+| Stampede prevention | ✅ Built-in | ❌ Manual |
+| Thread-safe | ✅ Yes | ✅ Yes |
+| Async operations | ✅ Full support | ⚠️ Limited |
+| Per-key locking | ✅ Yes | ❌ No |
+| Value-type keys | ✅ Yes | ❌ No |
+| Validation with timing | ✅ Yes | ❌ No |
+| Dependency injection | ✅ Yes | ✅ Yes |
 
 ### vs. ConcurrentDictionary
 
 | Feature | XpressCache | ConcurrentDictionary |
 |---------|-------------|---------------------|
-| Expiration | ? Automatic | ? Manual |
-| Stampede prevention | ? Built-in | ? Manual |
-| Cleanup | ? Automatic | ? Manual |
-| Async operations | ? Native | ? Sync only |
-| Memory bounds | ? Configurable | ?? Unbounded |
+| Expiration | ✅ Automatic | ❌ Manual |
+| Stampede prevention | ✅ Built-in | ❌ Manual |
+| Cleanup | ✅ Automatic | ❌ Manual |
+| Async operations | ✅ Native | ❌ Sync only |
+| Memory bounds | ✅ Configurable | ⚠️ Unbounded |
+| Validation hooks | ✅ Yes | ❌ No |
 
 ### vs. Redis (Distributed Cache)
 
 | Feature | XpressCache | Redis |
 |---------|-------------|-------|
 | Latency | ~10-100 ns | ~1-5 ms |
-| Network | ? Not required | ? Required |
-| Persistence | ? In-memory only | ? Yes |
-| Distributed | ? No | ? Yes |
+| Network | ✅ Not required | ❌ Required |
+| Persistence | ❌ In-memory only | ✅ Yes |
+| Distributed | ❌ No | ✅ Yes |
 | Complexity | Low | High |
 
 **Use XpressCache when:** You need in-process caching with stampede prevention  
@@ -670,6 +830,18 @@ new ConcurrentDictionary<CacheKey, CacheEntry>(
 
 **Mitigation:** Use probabilistic cleanup and appropriate TTL
 
+### Trade-off 4: Sync vs Async Validation
+
+**Decision:** Separate sync and async validation overloads
+
+**Rationale:**
+- Sync validation stays in lock-free fast path
+- Async validation only when truly needed
+- Maximum performance for common cases
+
+**Alternative:** Single async-only validation
+**Cost:** Forces async machinery even for simple checks
+
 ---
 
 ## Future Enhancements
@@ -705,3 +877,4 @@ Potential improvements (not currently planned):
 - [API Reference](API-Reference.md)
 - [Performance Guide](Performance-Guide.md)
 - [Getting Started Tutorial](Getting-Started.md)
+- [Testing Guide](Testing-Guide.md)

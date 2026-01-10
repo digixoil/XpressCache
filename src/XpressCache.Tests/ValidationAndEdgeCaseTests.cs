@@ -19,7 +19,7 @@ public class ValidationAndEdgeCaseTests
         _cache = new CacheStore(_logger);
     }
 
-    #region Custom Validation Tests
+    #region Custom Validation Tests (with CacheValidationContext)
 
     [Fact]
     public async Task LoadItem_SyncValidationPasses_UsesCachedItem()
@@ -34,15 +34,16 @@ public class ValidationAndEdgeCaseTests
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "First" }); });
 
-        // Act - Second call with sync validation that passes
+        // Act - Second call with sync validation that passes (using CacheValidationContext)
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Second" }); },
-            syncValidate: entity => entity.IsValid);
+            syncValidateWithContext: (entity, ctx) => entity.IsValid);
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call did recovery
+        Assert.NotNull(result);
         Assert.True(result.IsValid);
         Assert.Equal("First", result.Name); // Uses cached item
     }
@@ -60,15 +61,16 @@ public class ValidationAndEdgeCaseTests
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = false }); });
 
-        // Act - Second call with validation that fails
+        // Act - Second call with validation that fails (using CacheValidationContext)
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Fresh" }); },
-            syncValidate: entity => entity.IsValid);
+            syncValidateWithContext: (entity, ctx) => entity.IsValid);
 
         // Assert
         Assert.Equal(2, recoveryCount); // Recovery called again
+        Assert.NotNull(result);
         Assert.True(result.IsValid);
         Assert.Equal("Fresh", result.Name);
     }
@@ -86,12 +88,12 @@ public class ValidationAndEdgeCaseTests
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Cached" }); });
 
-        // Act - Second call with async validation that passes
+        // Act - Second call with async validation that passes (using CacheValidationContext)
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "New" }); },
-            asyncValidate: async entity =>
+            asyncValidateWithContext: async (entity, ctx) =>
             {
                 await Task.CompletedTask;
                 return entity.IsValid;
@@ -99,6 +101,7 @@ public class ValidationAndEdgeCaseTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call did recovery
+        Assert.NotNull(result);
         Assert.Equal("Cached", result.Name); // Uses cached item
     }
 
@@ -115,12 +118,12 @@ public class ValidationAndEdgeCaseTests
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = false }); });
 
-        // Act - Second call with async validation that fails
+        // Act - Second call with async validation that fails (using CacheValidationContext)
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { IsValid = true, Name = "Fresh" }); },
-            asyncValidate: async entity =>
+            asyncValidateWithContext: async (entity, ctx) =>
             {
                 await Task.CompletedTask;
                 return entity.IsValid;
@@ -128,6 +131,7 @@ public class ValidationAndEdgeCaseTests
 
         // Assert
         Assert.Equal(2, recoveryCount); // Recovery called again
+        Assert.NotNull(result);
         Assert.True(result.IsValid);
         Assert.Equal("Fresh", result.Name);
     }
@@ -149,11 +153,12 @@ public class ValidationAndEdgeCaseTests
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "New" }); },
-            syncValidate: null,
-            asyncValidate: null);
+            syncValidateWithContext: null,
+            asyncValidateWithContext: null);
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call did recovery
+        Assert.NotNull(result);
         Assert.Equal("Cached", result.Name);
     }
 
@@ -171,12 +176,12 @@ public class ValidationAndEdgeCaseTests
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "Cached", IsValid = true }); });
 
-        // Second call with async validation that passes
+        // Second call with async validation that passes (using CacheValidationContext)
         var result = await _cache.LoadItem<TestEntity>(
             entityId,
             "subject",
             _ => { recoveryCount++; return Task.FromResult(new TestEntity { Name = "Recovered", IsValid = true }); },
-            asyncValidate: async entity =>
+            asyncValidateWithContext: async (entity, ctx) =>
             {
                 validationCount++;
                 await Task.Delay(10); // Simulate async validation
@@ -185,8 +190,89 @@ public class ValidationAndEdgeCaseTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call does recovery
+        Assert.NotNull(result);
         Assert.Equal("Cached", result.Name); // Uses cached value
         Assert.Equal(1, validationCount); // Validation was called
+    }
+
+    [Fact]
+    public async Task LoadItem_ValidationCanAccessExpiryProgress()
+    {
+        // Arrange
+        var entityId = Guid.NewGuid();
+        double? capturedProgress = null;
+
+        await _cache.SetItem(entityId, "subject", new TestEntity { Name = "Test" });
+
+        // Act - Validation accesses the context
+        var result = await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => Task.FromResult(new TestEntity { Name = "Recovered" }),
+            syncValidateWithContext: (entity, ctx) =>
+            {
+                capturedProgress = ctx.ExpiryProgress;
+                return true;
+            });
+
+        // Assert
+        Assert.NotNull(capturedProgress);
+        Assert.True(capturedProgress >= 0.0 && capturedProgress <= 1.0);
+        Assert.NotNull(result);
+        Assert.Equal("Test", result.Name);
+    }
+
+    [Fact]
+    public async Task LoadItem_ValidationCanAccessTimeToExpiry()
+    {
+        // Arrange
+        var entityId = Guid.NewGuid();
+        TimeSpan? capturedTimeToExpiry = null;
+
+        await _cache.SetItem(entityId, "subject", new TestEntity { Name = "Test" });
+
+        // Act
+        var result = await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => Task.FromResult(new TestEntity { Name = "Recovered" }),
+            syncValidateWithContext: (entity, ctx) =>
+            {
+                capturedTimeToExpiry = ctx.TimeToExpiry;
+                return true;
+            });
+
+        // Assert
+        Assert.NotNull(capturedTimeToExpiry);
+        Assert.True(capturedTimeToExpiry.Value > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task LoadItem_ValidationCanAccessAge()
+    {
+        // Arrange
+        var entityId = Guid.NewGuid();
+        TimeSpan? capturedAge = null;
+
+        await _cache.SetItem(entityId, "subject", new TestEntity { Name = "Test" });
+        
+        // Wait a bit for the item to age
+        await Task.Delay(50);
+
+        // Act
+        var result = await _cache.LoadItem<TestEntity>(
+            entityId,
+            "subject",
+            _ => Task.FromResult(new TestEntity { Name = "Recovered" }),
+            syncValidateWithContext: (entity, ctx) =>
+            {
+                capturedAge = ctx.Age;
+                return true;
+            });
+
+        // Assert
+        Assert.NotNull(capturedAge);
+        Assert.True(capturedAge.Value >= TimeSpan.FromMilliseconds(40)); // Allow some tolerance
     }
 
     #endregion
@@ -254,7 +340,7 @@ public class ValidationAndEdgeCaseTests
     {
         // Arrange
         var entityId = Guid.NewGuid();
-        var unicodeSubject = "?????? ?? ???????";
+        var unicodeSubject = "??? ?? ???????";
 
         // Act
         await _cache.SetItem(entityId, unicodeSubject, new TestEntity { Name = "Unicode" });

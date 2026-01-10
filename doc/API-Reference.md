@@ -8,6 +8,7 @@ Complete reference for all public types, methods, and properties in XpressCache.
 - [CacheStore Class](#cachestore-class)
 - [CacheStoreOptions Class](#cachestoreoptions-class)
 - [CacheLoadBehavior Enum](#cacheloadbehavior-enum)
+- [CacheValidationContext Struct](#cachevalidationcontext-struct)
 
 ---
 
@@ -48,14 +49,15 @@ cache.EnableCache = true; // Clears cache first
 
 ### Methods
 
-#### LoadItem&lt;T&gt;
+#### LoadItem&lt;T&gt; (Standard Validation)
 
 ```csharp
-ValueTask<T> LoadItem<T>(
+ValueTask<T?> LoadItem<T>(
     Guid? entityId,
-    string subject,
-    Func<Guid, Task<T>> cacheMissRecovery,
-    Func<T, Task<bool>> customValidate = null,
+    string? subject,
+    Func<Guid, Task<T>>? cacheMissRecovery,
+    Func<T, bool>? syncValidate = null,
+    Func<T, Task<bool>>? asyncValidate = null,
     CacheLoadBehavior behavior = CacheLoadBehavior.Default
 ) where T : class
 ```
@@ -69,17 +71,19 @@ Loads an item from the cache, or retrieves it using the recovery function if not
 - `entityId` - The unique identifier of the entity (required, cannot be `Guid.Empty`)
 - `subject` - Optional subject for categorization (null normalized to empty string)
 - `cacheMissRecovery` - Function to retrieve the item if not in cache (can be null for cache-only checks)
-- `customValidate` - Optional validation function for cached items (returns false to invalidate)
+- `syncValidate` - Optional synchronous validation function for cached items (returns false to invalidate). Executes in lock-free fast path for optimal performance.
+- `asyncValidate` - Optional asynchronous validation function for cached items. Use only when validation requires async operations.
 - `behavior` - Cache loading behavior for stampede prevention (default: uses store-wide setting)
 
 **Returns:**
 - The cached item, recovered item, or `default(T)` if not found and no recovery function
 
 **Remarks:**
-- Returns `ValueTask<T>` to avoid Task allocation on cache hits
+- Returns `ValueTask<T?>` to avoid Task allocation on cache hits
 - Implements double-check locking when stampede prevention is active
 - Expired entries are automatically removed
 - Entry expiration is renewed on cache hit (best-effort)
+- When both validators are provided, `syncValidate` runs first
 
 **Example:**
 
@@ -91,12 +95,20 @@ var user = await cache.LoadItem<User>(
     cacheMissRecovery: async (id) => await database.GetUserAsync(id)
 );
 
-// With custom validation
+// With synchronous validation (preferred for performance)
 var product = await cache.LoadItem<Product>(
     entityId: productId,
     subject: "products",
     cacheMissRecovery: LoadProductAsync,
-    customValidate: async (p) => await IsProductStillValidAsync(p)
+    syncValidate: (p) => p.IsValid
+);
+
+// With async validation (when needed)
+var product = await cache.LoadItem<Product>(
+    entityId: productId,
+    subject: "products",
+    cacheMissRecovery: LoadProductAsync,
+    asyncValidate: async (p) => await IsProductStillValidAsync(p)
 );
 
 // Force stampede prevention
@@ -117,10 +129,81 @@ if (cached == null)
 
 ---
 
+#### LoadItem&lt;T&gt; (Validation with Context)
+
+```csharp
+ValueTask<T?> LoadItem<T>(
+    Guid? entityId,
+    string? subject,
+    Func<Guid, Task<T>>? cacheMissRecovery,
+    Func<T, CacheValidationContext, bool>? syncValidateWithContext = null,
+    Func<T, CacheValidationContext, Task<bool>>? asyncValidateWithContext = null,
+    CacheLoadBehavior behavior = CacheLoadBehavior.Default
+) where T : class
+```
+
+Loads an item from the cache with timing context available for validation.
+
+**Type Parameters:**
+- `T` - The type of the cached item (must be a reference type)
+
+**Parameters:**
+- `entityId` - The unique identifier of the entity
+- `subject` - Optional subject for categorization
+- `cacheMissRecovery` - Function to retrieve the item if not in cache
+- `syncValidateWithContext` - Synchronous validation function that receives `CacheValidationContext` with timing information
+- `asyncValidateWithContext` - Asynchronous validation function with timing context
+- `behavior` - Cache loading behavior for stampede prevention
+
+**Returns:**
+- The cached item, recovered item, or `default(T)` if not found
+
+**Remarks:**
+This overload provides timing context to validation callbacks, enabling sophisticated time-based validation logic such as:
+- Proactive refresh when entries are near expiration
+- Invalidating entries based on age rather than just TTL
+- Implementing custom staleness policies
+
+**Example:**
+
+```csharp
+// Proactive refresh at 75% TTL elapsed
+var user = await cache.LoadItem<User>(
+    userId, "users", LoadUserAsync,
+    syncValidateWithContext: (user, ctx) => ctx.ExpiryProgress < 0.75
+);
+
+// Refresh items with less than 30 seconds remaining
+var data = await cache.LoadItem<Data>(
+    dataId, "data", LoadDataAsync,
+    syncValidateWithContext: (data, ctx) => ctx.TimeToExpiry.TotalSeconds > 30
+);
+
+// Refresh items older than 2 minutes regardless of TTL
+var config = await cache.LoadItem<Config>(
+    configId, "config", LoadConfigAsync,
+    syncValidateWithContext: (config, ctx) => ctx.Age.TotalMinutes < 2
+);
+
+// Async validation with timing context
+var data = await cache.LoadItem<Data>(
+    dataId, "data", LoadDataAsync,
+    asyncValidateWithContext: async (data, ctx) =>
+    {
+        // Proactively refresh if near expiry and data is stale
+        if (ctx.ExpiryProgress > 0.8)
+            return await IsDataFreshAsync(data);
+        return true;
+    }
+);
+```
+
+---
+
 #### SetItem&lt;T&gt;
 
 ```csharp
-Task SetItem<T>(Guid? entityId, string subject, T item) where T : class
+Task SetItem<T>(Guid? entityId, string? subject, T item) where T : class
 ```
 
 Stores an item in the cache.
@@ -153,7 +236,7 @@ await cache.SetItem(userId, "users", user);
 #### RemoveItem&lt;T&gt;
 
 ```csharp
-bool RemoveItem<T>(Guid? entityId, string subject)
+bool RemoveItem<T>(Guid? entityId, string? subject)
 ```
 
 Removes a specific item from the cache.
@@ -183,7 +266,7 @@ if (removed)
 #### GetCachedItems&lt;T&gt;
 
 ```csharp
-List<T> GetCachedItems<T>(string subject) where T : class
+List<T>? GetCachedItems<T>(string? subject) where T : class
 ```
 
 Gets all cached items of a specific type and subject.
@@ -289,7 +372,7 @@ var cache = new CacheStore(loggerFactory.CreateLogger<CacheStore>());
 ```csharp
 public CacheStore(
     ILogger<CacheStore> logger,
-    IOptions<CacheStoreOptions> options
+    IOptions<CacheStoreOptions>? options
 )
 ```
 
@@ -297,7 +380,7 @@ Initializes a new instance with configuration from dependency injection.
 
 **Parameters:**
 - `logger` - Logger for diagnostic output (required)
-- `options` - Configuration options wrapper
+- `options` - Configuration options wrapper (if null, uses defaults)
 
 **Example:**
 
@@ -516,6 +599,105 @@ var config = await cache.LoadItem<Config>(
 
 ---
 
+## CacheValidationContext Struct
+
+Provides timing context for cache entry validation.
+
+**Namespace:** `XpressCache`
+
+### Properties
+
+#### ExpiryTicks
+
+```csharp
+public long ExpiryTicks { get; }
+```
+
+The tick count (from `Environment.TickCount64`) at which the cache entry will expire.
+
+---
+
+#### CurrentTicks
+
+```csharp
+public long CurrentTicks { get; }
+```
+
+The current tick count at the time of validation.
+
+---
+
+#### TtlMs
+
+```csharp
+public long TtlMs { get; }
+```
+
+The configured time-to-live for cache entries in milliseconds.
+
+---
+
+#### TimeToExpiry
+
+```csharp
+public TimeSpan TimeToExpiry { get; }
+```
+
+Gets the time remaining until the entry expires. Returns `TimeSpan.Zero` if already expired.
+
+---
+
+#### Age
+
+```csharp
+public TimeSpan Age { get; }
+```
+
+Gets how long the entry has been in cache (approximate). Note: Due to sliding expiration, this represents time since last renewal, not time since initial creation.
+
+---
+
+#### ExpiryProgress
+
+```csharp
+public double ExpiryProgress { get; }
+```
+
+Gets the progress toward expiration as a value between 0.0 and 1.0.
+
+**Values:**
+- `0.0` - Entry was just created/renewed
+- `0.5` - Entry is halfway to expiration
+- `1.0` - Entry has expired (or is about to)
+
+---
+
+### Usage Examples
+
+```csharp
+// Refresh when 75% of TTL has elapsed
+syncValidateWithContext: (item, ctx) => ctx.ExpiryProgress < 0.75
+
+// Refresh items older than 1 minute
+syncValidateWithContext: (item, ctx) => ctx.Age.TotalMinutes < 1
+
+// Refresh items with less than 30 seconds remaining
+syncValidateWithContext: (item, ctx) => ctx.TimeToExpiry.TotalSeconds > 30
+
+// Combine with business logic
+asyncValidateWithContext: async (item, ctx) =>
+{
+    // Proactive refresh near expiry
+    if (ctx.ExpiryProgress > 0.8)
+    {
+        return await IsDataFreshAsync(item);
+    }
+    return true;
+}
+```
+
+---
+
 ## Common Usage Patterns
 
 ### Pattern 1: Repository Pattern with Caching
@@ -532,7 +714,7 @@ public class CachedUserRepository : IUserRepository
         _inner = inner;
     }
 
-    public async Task<User> GetByIdAsync(Guid userId)
+    public async Task<User?> GetByIdAsync(Guid userId)
     {
         return await _cache.LoadItem<User>(
             entityId: userId,
@@ -554,23 +736,37 @@ public class CachedUserRepository : IUserRepository
 ### Pattern 2: Cache-Aside with Validation
 
 ```csharp
-public async Task<Product> GetProductWithPriceValidationAsync(Guid productId)
+public async Task<Product?> GetProductWithPriceValidationAsync(Guid productId)
 {
     return await _cache.LoadItem<Product>(
         entityId: productId,
         subject: "products",
         cacheMissRecovery: LoadProductFromDatabaseAsync,
-        customValidate: async (cached) =>
+        syncValidate: (cached) => cached.Price == _currentPrices[cached.Id]
+    );
+}
+```
+
+### Pattern 3: Proactive Refresh with Timing Context
+
+```csharp
+public async Task<StockPrice?> GetStockPriceAsync(Guid stockId)
+{
+    return await _cache.LoadItem<StockPrice>(
+        entityId: stockId,
+        subject: "prices",
+        cacheMissRecovery: FetchLatestPriceAsync,
+        syncValidateWithContext: (price, ctx) =>
         {
-            // Validate price hasn't changed
-            var currentPrice = await GetCurrentPriceAsync(cached.Id);
-            return cached.Price == currentPrice;
+            // Refresh prices that are more than 80% through their TTL
+            // This provides proactive refresh before expiry
+            return ctx.ExpiryProgress < 0.8;
         }
     );
 }
 ```
 
-### Pattern 3: Multi-Level Caching
+### Pattern 4: Multi-Level Caching
 
 ```csharp
 public class MultiLevelCache
@@ -578,7 +774,7 @@ public class MultiLevelCache
     private readonly ICacheStore _l1Cache;
     private readonly ICacheStore _l2Cache;
 
-    public async Task<T> GetAsync<T>(Guid id, Func<Guid, Task<T>> source) 
+    public async Task<T?> GetAsync<T>(Guid id, Func<Guid, Task<T>> source) 
         where T : class
     {
         // Try L1
@@ -613,3 +809,4 @@ public class MultiLevelCache
 - [Architecture Guide](Architecture.md)
 - [Performance Guide](Performance-Guide.md)
 - [Getting Started Tutorial](Getting-Started.md)
+- [Testing Guide](Testing-Guide.md)

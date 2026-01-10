@@ -8,6 +8,7 @@ A comprehensive guide to optimizing performance when using XpressCache.
 - [Benchmarking Results](#benchmarking-results)
 - [Configuration Tuning](#configuration-tuning)
 - [Best Practices](#best-practices)
+- [Validation Performance](#validation-performance)
 - [Common Pitfalls](#common-pitfalls)
 - [Monitoring and Diagnostics](#monitoring-and-diagnostics)
 - [Optimization Checklist](#optimization-checklist)
@@ -21,6 +22,8 @@ A comprehensive guide to optimizing performance when using XpressCache.
 | Operation | Time Complexity | Lock Required | Allocations |
 |-----------|----------------|---------------|-------------|
 | Cache Hit | O(1) average | No | 0 (ValueTask) |
+| Cache Hit + sync validation | O(1) average | No | 0 (context on stack) |
+| Cache Hit + async validation | O(1) + validation | Per-key | Task allocation |
 | Cache Miss (single-flight) | O(1) + recovery | Per-key | Task + entry |
 | Cache Miss (parallel) | O(1) + recovery | No | Task + entry |
 | SetItem | O(1) average | No | Entry object |
@@ -39,14 +42,16 @@ A comprehensive guide to optimizing performance when using XpressCache.
 **Typical latencies (Intel Xeon, .NET 8):**
 
 ```
-Cache Hit (found):           10-50 ns
-Cache Hit (expired):         50-100 ns (includes removal)
-Cache Miss (single-flight):  Lock overhead ~200-500 ns + recovery time
-Cache Miss (parallel):       ~100 ns + recovery time
-SetItem:                     50-150 ns
-RemoveItem:                  50-100 ns
-GetCachedItems (100 items):  5-10 ?s
-CleanupCache (1000 items):   50-200 ?s
+Cache Hit (found):                    10-50 ns
+Cache Hit + sync validation:          15-60 ns (context creation ~5ns)
+Cache Hit + async validation:         200-500 ns (includes lock)
+Cache Hit (expired):                  50-100 ns (includes removal)
+Cache Miss (single-flight):           Lock overhead ~200-500 ns + recovery time
+Cache Miss (parallel):                ~100 ns + recovery time
+SetItem:                              50-150 ns
+RemoveItem:                           50-100 ns
+GetCachedItems (100 items):           5-10 µs
+CleanupCache (1000 items):            50-200 µs
 ```
 
 **Factors affecting latency:**
@@ -54,6 +59,7 @@ CleanupCache (1000 items):   50-200 ?s
 - Memory contention
 - GC pressure
 - Lock contention (for cache misses)
+- Validation function complexity
 
 ---
 
@@ -89,6 +95,48 @@ Method   | Mean     | Allocated |
 CacheHit | 12.3 ns  | 0 B       |
 ```
 
+### Cache Hit with Sync Validation
+
+```csharp
+[Benchmark]
+public async ValueTask<User> CacheHitWithSyncValidation()
+{
+    return await _cache.LoadItem<User>(
+        _userId, "users",
+        cacheMissRecovery: null,
+        syncValidate: (u) => u.IsActive
+    );
+}
+```
+
+**Results:**
+```
+Method                     | Mean     | Allocated |
+---------------------------|----------|-----------|
+CacheHitWithSyncValidation | 15.1 ns  | 0 B       |
+```
+
+### Cache Hit with Timing Context Validation
+
+```csharp
+[Benchmark]
+public async ValueTask<User> CacheHitWithContextValidation()
+{
+    return await _cache.LoadItem<User>(
+        _userId, "users",
+        cacheMissRecovery: null,
+        syncValidateWithContext: (u, ctx) => ctx.ExpiryProgress < 0.75
+    );
+}
+```
+
+**Results:**
+```
+Method                         | Mean     | Allocated |
+-------------------------------|----------|-----------|
+CacheHitWithContextValidation  | 18.2 ns  | 0 B       |
+```
+
 ### Cache Miss with Stampede Prevention
 
 ```csharp
@@ -109,28 +157,6 @@ public async Task<User> CacheMissWithLock()
 Method              | Mean      | Allocated |
 --------------------|-----------|-----------|
 CacheMissWithLock   | 450 ns    | 384 B     |
-```
-
-### Cache Miss without Lock
-
-```csharp
-[Benchmark]
-public async Task<User> CacheMissNoLock()
-{
-    _cache.RemoveItem<User>(_userId, "users");
-    return await _cache.LoadItem<User>(
-        _userId, "users",
-        async id => new User { Id = id },
-        behavior: CacheLoadBehavior.AllowParallelLoad
-    );
-}
-```
-
-**Results:**
-```
-Method           | Mean      | Allocated |
------------------|-----------|-----------|
-CacheMissNoLock  | 180 ns    | 256 B     |
 ```
 
 ### Concurrent Cache Hits (10 threads)
@@ -157,36 +183,6 @@ Threads | Mean      | Throughput      |
 ```
 
 **Observation:** Near-linear scalability for cache hits (lock-free reads)
-
-### Concurrent Cache Misses (Same Key)
-
-```csharp
-[Benchmark]
-public async Task ConcurrentMissesSameKey()
-{
-    _cache.Clear();
-    var tasks = Enumerable.Range(0, 100)
-        .Select(_ => _cache.LoadItem<User>(
-            _userId, "users",
-            async id => { 
-                await Task.Delay(10); 
-                return new User { Id = id }; 
-            },
-            behavior: CacheLoadBehavior.PreventStampede))
-        .ToArray();
-    await Task.WhenAll(tasks);
-}
-```
-
-**Results:**
-```
-Behavior        | Recovery Calls | Total Time |
-----------------|----------------|------------|
-PreventStampede | 1              | ~10 ms     |
-AllowParallel   | 100            | ~10 ms     |
-```
-
-**Observation:** PreventStampede executes recovery once; AllowParallel executes 100 times (wasteful for expensive operations)
 
 ---
 
@@ -237,15 +233,6 @@ InitialCapacity = 8192
 
 **Tuning tip:** Set to ~1.5× expected steady-state cache size
 
-**Benchmark:**
-```
-InitialCapacity | First 1000 Inserts | Memory Overhead |
-----------------|-------------------|-----------------|
-64              | 2.1 ms (rehash)   | Low             |
-512             | 1.3 ms (1 rehash) | Medium          |
-2048            | 0.8 ms (no rehash)| High            |
-```
-
 ### ProbabilisticCleanupThreshold
 
 **Impact:** Controls when automatic cleanup triggers
@@ -267,8 +254,6 @@ ProbabilisticCleanupThreshold = 5000
 - **Lower threshold:** More frequent cleanup, lower memory, higher CPU
 - **Higher threshold:** Less frequent cleanup, higher memory, lower CPU
 
-**Tuning tip:** Set to 2× your typical cache size to balance cleanup frequency
-
 ### PreventCacheStampedeByDefault
 
 **Impact:** Controls default single-flight behavior
@@ -282,12 +267,6 @@ PreventCacheStampedeByDefault = true  // Default
 // Primarily cheap, idempotent operations
 PreventCacheStampedeByDefault = false
 ```
-
-**Trade-offs:**
-- **true:** Prevents wasted work, adds lock overhead
-- **false:** No lock overhead, potential duplicate work
-
-**Tuning tip:** Enable by default, selectively disable with `CacheLoadBehavior.AllowParallelLoad`
 
 ---
 
@@ -310,14 +289,56 @@ var user = await cache.LoadItem<User>(
 
 ```csharp
 // In-memory computation - allow parallel execution
-var hash = await cache.LoadItem<int>(
+var hash = await cache.LoadItem<HashResult>(
     dataId, "hashes",
-    async id => await ComputeHashAsync(data),
+    async id => ComputeHash(data),
     behavior: CacheLoadBehavior.AllowParallelLoad
 );
 ```
 
-### 2. Use Appropriate Subject Granularity
+### 2. Prefer Sync Validation Over Async
+
+**Good (fast path):**
+
+```csharp
+var user = await cache.LoadItem<User>(
+    userId, "users", LoadUserAsync,
+    syncValidate: (u) => u.IsActive  // No async overhead
+);
+```
+
+**Avoid when possible:**
+
+```csharp
+// Only use async when truly needed (database checks, API calls)
+var user = await cache.LoadItem<User>(
+    userId, "users", LoadUserAsync,
+    asyncValidate: async (u) => await IsUserValidAsync(u)  // Requires lock
+);
+```
+
+### 3. Use Timing Context for Proactive Refresh
+
+**Proactive refresh pattern:**
+
+```csharp
+var data = await cache.LoadItem<Data>(
+    dataId, "data", LoadDataAsync,
+    syncValidateWithContext: (data, ctx) =>
+    {
+        // Refresh when 80% of TTL has elapsed
+        // This prevents mass expiration and spreads load
+        return ctx.ExpiryProgress < 0.8;
+    }
+);
+```
+
+**Benefits:**
+- Prevents thundering herd on TTL expiry
+- Spreads refresh load over time
+- Keeps cache warm proactively
+
+### 4. Use Appropriate Subject Granularity
 
 **Good:**
 
@@ -331,15 +352,14 @@ await cache.LoadItem<Order>(orderId, "orders", ...);
 **Bad:**
 
 ```csharp
-// Too granular (doesn't leverage multi-entity operations)
+// Too granular
 await cache.LoadItem<User>(userId, $"user-{userId}", ...);
 
-// Too broad (mixing unrelated types)
+// Too broad
 await cache.LoadItem<User>(userId, "entities", ...);
-await cache.LoadItem<Product>(productId, "entities", ...);
 ```
 
-### 3. Avoid GetCachedItems in Hot Paths
+### 5. Avoid GetCachedItems in Hot Paths
 
 **Bad:**
 
@@ -347,7 +367,7 @@ await cache.LoadItem<Product>(productId, "entities", ...);
 // Called on every request - O(n) scan each time!
 public async Task<ActionResult> GetUsers()
 {
-    var users = cache.GetCachedItems<User>("users"); // O(n)
+    var users = cache.GetCachedItems<User>("users");
     return Ok(users);
 }
 ```
@@ -358,277 +378,216 @@ public async Task<ActionResult> GetUsers()
 // Called only when needed
 public async Task InvalidateUserCache()
 {
-    var users = cache.GetCachedItems<User>("users"); // O(n) but rare
-    foreach (var user in users)
+    var users = cache.GetCachedItems<User>("users");
+    foreach (var user in users ?? [])
     {
         cache.RemoveItem<User>(user.Id, "users");
     }
 }
 ```
 
-### 4. Minimize Recovery Function Overhead
-
-**Bad:**
-
-```csharp
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    async id => {
-        // Multiple operations in recovery
-        var userData = await database.GetUserAsync(id);
-        var permissions = await database.GetPermissionsAsync(id);
-        var settings = await database.GetSettingsAsync(id);
-        return new User { 
-            Data = userData, 
-            Permissions = permissions, 
-            Settings = settings 
-        };
-    }
-);
-```
-
-**Good:**
-
-```csharp
-// Cache each independently
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    database.GetUserAsync
-);
-
-var permissions = await cache.LoadItem<Permissions>(
-    userId, "permissions",
-    database.GetPermissionsAsync
-);
-
-var settings = await cache.LoadItem<Settings>(
-    userId, "settings",
-    database.GetSettingsAsync
-);
-```
-
-**Benefit:** Independent expiration, better cache hit rates
-
-### 5. Handle Null Returns
-
-**Bad:**
-
-```csharp
-var user = await cache.LoadItem<User>(userId, "users", ...);
-var name = user.Name; // NullReferenceException if user is null!
-```
-
-**Good:**
+### 6. Handle Null Returns
 
 ```csharp
 var user = await cache.LoadItem<User>(userId, "users", ...);
 if (user == null)
 {
-    // Handle missing user
     return NotFound();
 }
-var name = user.Name;
 ```
 
-### 6. Use Custom Validation Wisely
+---
 
-**Good use cases:**
+## Validation Performance
 
-```csharp
-// Validate price hasn't changed
-customValidate: async (product) => 
-    product.Price == await GetCurrentPriceAsync(product.Id)
+### Sync vs Async Validation
 
-// Validate user still active
-customValidate: async (user) => 
-    await IsUserActiveAsync(user.Id)
+| Validation Type | Lock Required | Fast Path | Use When |
+|-----------------|---------------|-----------|----------|
+| None | No | ✅ Yes | Simple caching, no staleness concerns |
+| syncValidate | No | ✅ Yes | Simple property checks, computed validation |
+| syncValidateWithContext | No | ✅ Yes | Time-based validation, proactive refresh |
+| asyncValidate | Yes | ❌ No | Database/API checks required |
+| asyncValidateWithContext | Yes | ❌ No | Time-based + external validation |
+
+### Timing Context Overhead
+
+The `CacheValidationContext` is a `readonly struct` allocated on the stack:
+
+```
+Context creation:    ~2-5 ns
+Property access:     ~1-2 ns each
+Total overhead:      ~5-10 ns per validation
 ```
 
-**Bad use cases:**
+This is negligible compared to cache hit time (~12 ns).
+
+### Validation Best Practices
+
+**1. Keep sync validation simple:**
 
 ```csharp
-// Always returns true (pointless overhead)
-customValidate: async (item) => true
+// Good - simple property check
+syncValidate: (item) => item.IsValid
 
-// Expensive validation (defeats caching purpose)
-customValidate: async (item) => 
-    await PerformExpensiveCheckAsync(item)
+// Good - computed check
+syncValidate: (item) => item.UpdatedAt > DateTime.UtcNow.AddMinutes(-5)
+
+// Avoid - complex logic
+syncValidate: (item) => ExpensiveValidation(item)  // Move to async if expensive
 ```
 
-### 7. Configure Appropriate Cleanup
-
-**Option 1: Probabilistic (automatic)**
+**2. Use timing context effectively:**
 
 ```csharp
-var options = new CacheStoreOptions
+// Proactive refresh at 75%
+syncValidateWithContext: (item, ctx) => ctx.ExpiryProgress < 0.75
+
+// Conditional async validation
+asyncValidateWithContext: async (item, ctx) =>
 {
-    ProbabilisticCleanupThreshold = 1000
-};
-// Cleanup happens automatically
-```
-
-**Option 2: Manual (scheduled)**
-
-```csharp
-// In ASP.NET Core
-services.AddHostedService<CacheCleanupService>();
-
-public class CacheCleanupService : BackgroundService
-{
-    private readonly ICacheStore _cache;
-
-    protected override async Task ExecuteAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            await Task.Delay(TimeSpan.FromMinutes(5), ct);
-            _cache.CleanupCache();
-        }
-    }
+    // Only perform expensive check near expiry
+    if (ctx.ExpiryProgress > 0.9)
+        return await ExpensiveCheckAsync(item);
+    return true;
 }
 ```
 
-**Recommendation:** Use both for optimal memory management
+**3. Combine sync and async validation:**
+
+```csharp
+// Sync check first (fast), then async if needed
+var item = await cache.LoadItem<Item>(
+    id, "items", LoadItemAsync,
+    syncValidateWithContext: (item, ctx) => 
+        item.IsValid && ctx.ExpiryProgress < 0.9,  // Fast check
+    asyncValidateWithContext: async (item, ctx) =>
+        await ValidateWithExternalServiceAsync(item)  // Only if sync passes
+);
+```
 
 ---
 
 ## Common Pitfalls
 
-### Pitfall 1: Caching Too Much
+### Pitfall 1: Using Async Validation Unnecessarily
 
 **Problem:**
 
 ```csharp
-// Caching large objects
-var report = await cache.LoadItem<byte[]>(
-    reportId, "reports",
-    async id => await GenerateLargeReportAsync(id) // 50 MB!
-);
+// Forces lock acquisition even for simple validation
+asyncValidate: async (item) =>
+{
+    await Task.CompletedTask;
+    return item.IsValid;  // This is synchronous!
+}
 ```
-
-**Impact:** High memory usage, GC pressure, potential OutOfMemoryException
 
 **Solution:**
 
 ```csharp
-// Cache metadata, load data on-demand
-var metadata = await cache.LoadItem<ReportMetadata>(
-    reportId, "report-metadata",
-    async id => await GetReportMetadataAsync(id) // 1 KB
-);
-
-// Load full report only when needed
-var report = await LoadReportFromDiskAsync(metadata.FilePath);
+// Use sync validation for synchronous checks
+syncValidate: (item) => item.IsValid
 ```
 
-### Pitfall 2: Infinite Recovery Loops
+### Pitfall 2: Expensive Sync Validation
 
 **Problem:**
 
 ```csharp
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    async id => await cache.LoadItem<User>(id, "users", ...) // Infinite!
-);
+// Blocking I/O in sync validation - very bad!
+syncValidate: (item) =>
+{
+    var result = httpClient.GetAsync(...).Result;  // DEADLOCK RISK!
+    return result.IsValid;
+}
 ```
-
-**Impact:** Stack overflow, deadlock
 
 **Solution:**
 
 ```csharp
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    async id => await database.GetUserAsync(id) // Direct source
-);
+// Use async validation for I/O
+asyncValidate: async (item) =>
+{
+    var result = await httpClient.GetAsync(...);
+    return result.IsValid;
+}
 ```
 
-### Pitfall 3: Ignoring Cache Stampede on Expensive Operations
+### Pitfall 3: Ignoring Timing Context Opportunities
 
 **Problem:**
 
 ```csharp
-// 100 concurrent requests for same uncached item
-var data = await cache.LoadItem<Data>(
-    id, "data",
-    async id => await ExpensiveDatabaseQueryAsync(id), // 5 seconds!
-    behavior: CacheLoadBehavior.AllowParallelLoad // Bad!
-);
-```
+// Fixed validation, no proactive refresh
+syncValidate: (item) => item.IsValid
 
-**Impact:** 100 × 5 sec = 500 seconds of total query time, database overload
+// Results in thundering herd when multiple items expire together
+```
 
 **Solution:**
 
 ```csharp
-var data = await cache.LoadItem<Data>(
-    id, "data",
-    async id => await ExpensiveDatabaseQueryAsync(id),
-    behavior: CacheLoadBehavior.PreventStampede // Good!
-);
+// Spread refresh load with timing context
+syncValidateWithContext: (item, ctx) =>
+    item.IsValid && ctx.ExpiryProgress < 0.8
 ```
 
-**Result:** 1 × 5 sec = 5 seconds total, 99 requests wait for result
-
-### Pitfall 4: Not Handling Exceptions in Recovery
+### Pitfall 4: Not Handling Validation Failures Gracefully
 
 **Problem:**
 
 ```csharp
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    async id => {
-        var data = await database.GetUserAsync(id);
-        // Exception here prevents caching!
-        return data.Transform(); // May throw
+asyncValidate: async (item) =>
+{
+    // If external service is down, all cache reads fail!
+    return await externalService.ValidateAsync(item);
+}
+```
+
+**Solution:**
+
+```csharp
+asyncValidateWithContext: async (item, ctx) =>
+{
+    try
+    {
+        // Only check with external service if item is old
+        if (ctx.ExpiryProgress > 0.9)
+            return await externalService.ValidateAsync(item);
+        return true;
     }
-);
-```
-
-**Impact:** Exceptions propagate, no caching occurs, subsequent calls retry
-
-**Solution:**
-
-```csharp
-var user = await cache.LoadItem<User>(
-    userId, "users",
-    async id => {
-        try
-        {
-            var data = await database.GetUserAsync(id);
-            return data.Transform();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to load user {UserId}", id);
-            return null; // Or default value
-        }
+    catch (Exception)
+    {
+        // Graceful degradation - use cached value
+        return ctx.ExpiryProgress < 0.95;
     }
-);
+}
 ```
 
-### Pitfall 5: Using Wrong Subject for Invalidation
+### Pitfall 5: Over-validating Fresh Items
 
 **Problem:**
 
 ```csharp
-// Cached with subject "users"
-await cache.SetItem(userId, "users", user);
-
-// Trying to remove with different subject
-cache.RemoveItem<User>(userId, "user"); // Wrong! Doesn't match
+// Every cache hit does expensive validation
+asyncValidate: async (item) =>
+    await ExpensiveValidationAsync(item)  // Called on every hit!
 ```
-
-**Impact:** Item not removed, cache inconsistency
 
 **Solution:**
 
 ```csharp
-// Use consistent subjects
-const string USERS_SUBJECT = "users";
-
-await cache.SetItem(userId, USERS_SUBJECT, user);
-cache.RemoveItem<User>(userId, USERS_SUBJECT); // Correct
+// Only validate older items
+asyncValidateWithContext: async (item, ctx) =>
+{
+    // Skip validation for fresh items
+    if (ctx.ExpiryProgress < 0.5)
+        return true;
+    
+    // Validate items in second half of TTL
+    return await ExpensiveValidationAsync(item);
+}
 ```
 
 ---
@@ -651,21 +610,28 @@ public class CacheMetrics
     public void RecordHit() => Interlocked.Increment(ref _hits);
     public void RecordMiss() => Interlocked.Increment(ref _misses);
 }
-
-// In your code
-var cached = await cache.LoadItem<User>(userId, "users", null);
-if (cached != null)
-    _metrics.RecordHit();
-else
-{
-    _metrics.RecordMiss();
-    cached = await cache.LoadItem<User>(userId, "users", LoadUserAsync);
-}
 ```
 
 **Target:** > 80% for frequently accessed data
 
-**2. Average Load Time**
+**2. Validation Rate**
+
+Track how often validation fails to trigger refresh:
+
+```csharp
+var validationFailures = 0;
+
+var item = await cache.LoadItem<Item>(
+    id, "items", LoadItemAsync,
+    syncValidateWithContext: (item, ctx) =>
+    {
+        var valid = ctx.ExpiryProgress < 0.8;
+        if (!valid) Interlocked.Increment(ref validationFailures);
+        return valid;
+    });
+```
+
+**3. Average Load Time**
 
 ```csharp
 var sw = Stopwatch.StartNew();
@@ -673,18 +639,6 @@ var item = await cache.LoadItem<Item>(id, "items", LoadItemAsync);
 sw.Stop();
 _metrics.RecordLoadTime(sw.ElapsedMilliseconds);
 ```
-
-**Target:** < 100ms for cache misses
-
-**3. Cache Size**
-
-```csharp
-// Approximate size (not exact due to concurrency)
-var size = cache.GetCachedItems<object>(string.Empty)?.Count ?? 0;
-_metrics.RecordCacheSize(size);
-```
-
-**Target:** Below `ProbabilisticCleanupThreshold`
 
 ### Logging Recommendations
 
@@ -704,50 +658,6 @@ services.AddLogging(builder =>
 - Type mismatches
 - Enable/disable events
 
-**Example output:**
-
-```
-[Debug] CacheStore initialized with PreventCacheStampedeByDefault=True, TtlMs=600000
-[Debug] Releasing cache from (245) expired objects...
-[Debug] Finish cache cleanup, (1832) non-expired objects still in memory
-[Warn] Found cached item (id = '...'); however its type 'UserDto' not as expected 'User'
-[Info] Cache has been deactivated
-```
-
-### Performance Profiling
-
-**Use BenchmarkDotNet:**
-
-```csharp
-[MemoryDiagnoser]
-public class CacheBenchmarks
-{
-    private ICacheStore _cache;
-
-    [GlobalSetup]
-    public void Setup()
-    {
-        _cache = new CacheStore(...);
-    }
-
-    [Benchmark]
-    public async ValueTask<User> LoadCachedUser()
-    {
-        return await _cache.LoadItem<User>(...);
-    }
-}
-```
-
-**Use .NET Diagnostic Tools:**
-
-```bash
-# Measure allocations
-dotnet trace collect --process-id <pid> --providers Microsoft-Windows-DotNETRuntime:0x1:4
-
-# Analyze GC pressure
-dotnet counters monitor --process-id <pid> System.Runtime
-```
-
 ---
 
 ## Optimization Checklist
@@ -759,140 +669,114 @@ dotnet counters monitor --process-id <pid> System.Runtime
 - [ ] Set `ProbabilisticCleanupThreshold` to ~2× typical cache size
 - [ ] Enable `PreventCacheStampedeByDefault` for expensive operations
 
+### Validation
+
+- [ ] Use `syncValidate` instead of `asyncValidate` when possible
+- [ ] Use `syncValidateWithContext` for time-based validation
+- [ ] Implement proactive refresh (ExpiryProgress < 0.75-0.8)
+- [ ] Handle validation failures gracefully
+- [ ] Avoid expensive operations in sync validation
+
 ### Code
 
 - [ ] Use `CacheLoadBehavior.PreventStampede` for database/API calls
 - [ ] Use `CacheLoadBehavior.AllowParallelLoad` for cheap operations
 - [ ] Avoid `GetCachedItems` in hot paths
 - [ ] Handle null returns from `LoadItem`
-- [ ] Use consistent subject strings (consider constants)
-- [ ] Keep recovery functions simple and focused
-- [ ] Implement exception handling in recovery functions
+- [ ] Use consistent subject strings
 
 ### Memory
 
 - [ ] Avoid caching very large objects (> 10 MB)
 - [ ] Set up periodic manual cleanup if needed
 - [ ] Monitor cache size metrics
-- [ ] Consider object pooling for frequently allocated types
 
 ### Monitoring
 
 - [ ] Track hit/miss rates
+- [ ] Track validation failure rates
 - [ ] Measure average load times
-- [ ] Monitor cache size
-- [ ] Enable appropriate logging level
-- [ ] Set up alerts for low hit rates or high memory usage
-
-### Testing
-
-- [ ] Load test with expected concurrency
-- [ ] Test cache stampede scenarios
-- [ ] Benchmark cache hit latency
-- [ ] Verify cleanup runs as expected
-- [ ] Test memory usage under load
+- [ ] Set up alerts for low hit rates
 
 ---
 
 ## Advanced Optimization Techniques
 
-### 1. Cache Warming
+### 1. Tiered Validation
 
-Pre-populate cache with frequently accessed items:
+```csharp
+public async Task<Data?> GetDataWithTieredValidationAsync(Guid dataId)
+{
+    return await _cache.LoadItem<Data>(
+        dataId, "data", LoadDataAsync,
+        syncValidateWithContext: (data, ctx) =>
+        {
+            // Tier 1: Always accept very fresh items
+            if (ctx.ExpiryProgress < 0.25) return true;
+            
+            // Tier 2: Basic validation for moderately fresh items
+            if (ctx.ExpiryProgress < 0.75) return data.IsValid;
+            
+            // Tier 3: Strict validation for older items (forces refresh)
+            return false;
+        });
+}
+```
+
+### 2. Cache Warming with Timing
 
 ```csharp
 public async Task WarmCacheAsync()
 {
-    var frequentUserIds = await GetFrequentUserIdsAsync();
-    var tasks = frequentUserIds.Select(id =>
-        cache.LoadItem<User>(id, "users", LoadUserAsync)
-    );
-    await Task.WhenAll(tasks);
+    var items = await GetFrequentlyAccessedItemsAsync();
+    
+    foreach (var item in items)
+    {
+        // Load with validation that only refreshes old items
+        await _cache.LoadItem<Data>(
+            item.Id, "data",
+            async id => await LoadDataAsync(id),
+            syncValidateWithContext: (data, ctx) =>
+                ctx.Age.TotalMinutes < 5  // Keep items accessed within 5 min
+        );
+    }
 }
 ```
 
-### 2. Layered Caching
-
-Combine XpressCache with distributed cache:
+### 3. Graceful Degradation
 
 ```csharp
-public async Task<T> GetWithLayeredCacheAsync<T>(
-    Guid id, 
-    Func<Guid, Task<T>> source) where T : class
+public async Task<Data?> GetDataWithDegradationAsync(Guid dataId)
 {
-    // L1: XpressCache (in-process)
-    var item = await _xpressCache.LoadItem<T>(id, "l1", null);
-    if (item != null) return item;
-
-    // L2: Redis (distributed)
-    item = await _redis.GetAsync<T>(id);
-    if (item != null)
-    {
-        await _xpressCache.SetItem(id, "l1", item);
-        return item;
-    }
-
-    // L3: Source (database)
-    item = await source(id);
-    await _redis.SetAsync(id, item);
-    await _xpressCache.SetItem(id, "l1", item);
-    return item;
-}
-```
-
-### 3. Conditional Caching
-
-Cache only expensive results:
-
-```csharp
-public async Task<Data> LoadDataAsync(Guid id)
-{
-    var sw = Stopwatch.StartNew();
-    var data = await database.LoadDataAsync(id);
-    sw.Stop();
-
-    // Only cache if load took > 100ms
-    if (sw.ElapsedMilliseconds > 100)
-    {
-        await cache.SetItem(id, "data", data);
-    }
-
-    return data;
-}
-```
-
-### 4. Batch Operations
-
-Reduce overhead for multiple related items:
-
-```csharp
-public async Task<List<User>> LoadUsersAsync(List<Guid> userIds)
-{
-    // Check cache first
-    var results = new Dictionary<Guid, User>();
-    var missing = new List<Guid>();
-
-    foreach (var id in userIds)
-    {
-        var cached = await cache.LoadItem<User>(id, "users", null);
-        if (cached != null)
-            results[id] = cached;
-        else
-            missing.Add(id);
-    }
-
-    // Batch load missing
-    if (missing.Any())
-    {
-        var loaded = await database.LoadUsersBatchAsync(missing);
-        foreach (var user in loaded)
+    return await _cache.LoadItem<Data>(
+        dataId, "data",
+        async id =>
         {
-            results[user.Id] = user;
-            await cache.SetItem(user.Id, "users", user);
-        }
-    }
-
-    return userIds.Select(id => results.GetValueOrDefault(id)).ToList();
+            try
+            {
+                return await LoadDataFromPrimaryAsync(id);
+            }
+            catch
+            {
+                // Fallback to secondary source
+                return await LoadDataFromFallbackAsync(id);
+            }
+        },
+        asyncValidateWithContext: async (data, ctx) =>
+        {
+            try
+            {
+                // Validate with external service
+                if (ctx.ExpiryProgress > 0.8)
+                    return await ValidateExternallyAsync(data);
+                return true;
+            }
+            catch
+            {
+                // On validation failure, keep using cached data if not too old
+                return ctx.ExpiryProgress < 0.95;
+            }
+        });
 }
 ```
 
@@ -903,3 +787,4 @@ public async Task<List<User>> LoadUsersAsync(List<Guid> userIds)
 - [API Reference](API-Reference.md)
 - [Architecture Guide](Architecture.md)
 - [Getting Started Tutorial](Getting-Started.md)
+- [Testing Guide](Testing-Guide.md)
