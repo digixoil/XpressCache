@@ -12,7 +12,7 @@ A high-performance, thread-safe in-memory cache for .NET with built-in cache sta
 - 🛡️ **Cache Stampede Prevention**: Per-key single-flight locking prevents thundering herd problems
 - ⏳ **Sliding Expiration**: Automatic TTL renewal on access with configurable expiry policies
 - ⚙️ **Flexible Configuration**: Control stampede prevention globally or per-call
-- 🎯 **Multi-Targeting**: Supports .NET 6.0, .NET 7.0, and .NET 8.0
+- 🎯 **Multi-Targeting**: Supports .NET 6.0, .NET 7.0, .NET 8.0, .NET 9.0, and .NET 10.0
 - 🧹 **Automatic Cleanup**: Probabilistic and manual cleanup of expired entries
 - 🧪 **Custom Validation**: Support for custom validation functions on cached items
 - 📚 **Fully Documented**: Comprehensive XML documentation for all public APIs

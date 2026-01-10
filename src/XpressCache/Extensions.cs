@@ -28,7 +28,7 @@ internal static class Extensions
     {
         if ((g ?? Guid.Empty) == Guid.Empty) throw new ArgumentNullException(paramName: paramName, message: message);
 
-        return (Guid)g;
+        return (Guid)g!;
     }
 
     public static bool AssertTrue(this bool? b, string paramName, string? message = null)
@@ -59,14 +59,14 @@ internal static class Extensions
     {
         if ((o?.Count ?? 0) == 0) throw new ArgumentNullException(paramName: paramName, message: message);
 
-        return o;
+        return o!;
     }
 
     public static T[] AssertNotEmpty<T>(this T[]? o, string paramName, string? message = null) where T : class
     {
         if ((o?.Length ?? 0) == 0) throw new ArgumentNullException(paramName: paramName, message: message);
 
-        return o;
+        return o!;
     }
 
     public static string AssertNotWhiteSpace(this string? s, string paramName, string? message = null)

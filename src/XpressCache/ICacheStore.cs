@@ -134,7 +134,6 @@ public interface ICacheStore
     /// <typeparam name="T">The type of the cached item. Must be a reference type.</typeparam>
     /// <param name="entityId">
     /// The unique identifier of the entity. If <c>null</c> or <see cref="Guid.Empty"/>,
-
     /// returns <c>default</c> without executing recovery.
     /// </param>
     /// <param name="subject">
@@ -245,7 +244,6 @@ public interface ICacheStore
     /// <typeparam name="T">The type of the item to cache. Must be a reference type.</typeparam>
     /// <param name="entityId">
     /// The unique identifier of the entity. If <c>null</c> or <see cref="Guid.Empty"/>,
-
     /// the operation is a no-op.
     /// </param>
     /// <param name="subject">

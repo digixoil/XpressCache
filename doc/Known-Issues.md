@@ -8,7 +8,7 @@ This document tracks known issues, limitations, and planned enhancements for Xpr
 
 #### ~~Custom Validation with Cached Items~~ ✅ FIXED in v1.0.1
 **Status:** ✅ Resolved  
-**Affected Version:** 1.0.0  
+**Affected Version:** 1.0.0.1  
 **Fixed in:** v1.0.1  
 
 **Issue:** When `customValidate` was provided, the fast-path cache hit was bypassed, forcing the async validation path which acquired locks unnecessarily and called recovery even for cache hits.
@@ -22,7 +22,7 @@ This document tracks known issues, limitations, and planned enhancements for Xpr
 
 **Migration Guide:**
 ```csharp
-// Before (v1.0.0) - forced async path, called recovery unnecessarily
+// Before (v1.0.0.1) - forced async path, called recovery unnecessarily
 var item = await cache.LoadItem<T>(
     id, subject, recovery,
     customValidate: async (x) => await ValidateAsync(x)
@@ -54,7 +54,7 @@ var item = await cache.LoadItem<T>(
 
 #### ~~Nullable Reference Types Not Enabled~~ ✅ COMPLETED
 **Status:** ✅ Resolved  
-**Affected Version:** 1.0.0  
+**Affected Version:** 1.0.0.1  
 **Fixed in:** v1.0.1
 
 **Issue:** Project did not have nullable reference types enabled at project level.
@@ -69,7 +69,7 @@ var item = await cache.LoadItem<T>(
 
 #### ~~Performance Tests May Interfere with Unit Tests~~ ✅ COMPLETED
 **Status:** ✅ Resolved  
-**Affected Version:** 1.0.0  
+**Affected Version:** 1.0.0.1  
 **Fixed in:** v1.0.1
 
 **Issue:** Performance/benchmark tests ran in the same test suite as unit tests, potentially causing resource contention and timeouts in CI environments.
@@ -213,7 +213,7 @@ See [Testing-Guide.md](Testing-Guide.md) for complete documentation.
 - [ ] Remove deprecated features
 - [ ] Optimize data structures based on production usage
 
-**Est. Release:** 12+ months after 1.0.0
+**Est. Release:** 12+ months after 1.0.0.1
 
 ---
 
@@ -241,7 +241,7 @@ See [Testing-Guide.md](Testing-Guide.md) for complete documentation.
 
 #### Migration
 ```csharp
-// Old code (v1.0.0)
+// Old code (v1.0.0.1)
 await cache.LoadItem(id, subject, recovery, 
     customValidate: async x => x.IsValid);
 
@@ -254,7 +254,7 @@ await cache.LoadItem(id, subject, recovery,
     asyncValidate: async x => await CheckAsync(x));
 ```
 
-### v1.0.0 (Initial Release)
+### v1.0.0.1 (Initial Release)
 
 - Initial implementation with cache stampede prevention
 - Multi-targeting: .NET 6.0, 7.0, 8.0

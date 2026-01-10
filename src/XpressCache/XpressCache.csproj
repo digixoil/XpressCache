@@ -1,34 +1,52 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<!--<TargetFrameworks>net6.0;net7.0;net8.0;net10.0</TargetFrameworks>-->
-		<TargetFramework>net10.0</TargetFramework>
+		<TargetFrameworks>net10.0;net9.0;net8.0;net7.0;net6.0</TargetFrameworks>		
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<LangVersion>latest</LangVersion>
 
 		<!-- NuGet Package Metadata -->
 		<PackageId>XpressCache</PackageId>
-		<Version>1.0.0</Version>
+		<Version>1.0.0.1</Version>
 		<Authors>Russlan Kafri</Authors>
 		<Company>Digixoil</Company>
+		<Title>XpressCache</Title>
+		<AssemblyProduct>XpressCache</AssemblyProduct>
+		<Copyright>Copyright © 2026 Digixoil</Copyright>
 		<Description>A high-performance, thread-safe in-memory cache with built-in cache stampede (thundering herd) prevention using per-key single-flight locking. Features sliding expiration, custom validation, and configurable behavior.</Description>
 		<PackageTags>cache;caching;in-memory;thread-safe;single-flight;stampede-prevention;thundering-herd;concurrent;async</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
-		<PackageProjectUrl>https://github.com/digixoil/XpressCache</PackageProjectUrl>
+		<PackageProjectUrl>https://www.digixoil.se/</PackageProjectUrl>
 		<RepositoryUrl>https://github.com/digixoil/XpressCache</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<Copyright>Copyright © Digixoil</Copyright>
 
 		<!-- Build Configuration -->
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
 		<RootNamespace>XpressCache</RootNamespace>
 		<AssemblyName>XpressCache</AssemblyName>
+		
 		<PackageIcon>icon.png</PackageIcon>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+		<PlatformTarget>AnyCPU</PlatformTarget>
+		<DebugSymbols>true</DebugSymbols>
+		<DebugType>full</DebugType>
+		<Optimize>false</Optimize>
+		<OutputPath>bin\Debug\</OutputPath>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+		<PlatformTarget>AnyCPU</PlatformTarget>
+		<DebugType>pdbonly</DebugType>
+		<Optimize>true</Optimize>
+		<OutputPath>bin\Release\</OutputPath>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -37,10 +55,34 @@
 		<None Include="..\..\assets\images\icon.png" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
-	<ItemGroup>
+	<ItemGroup Condition="'$(TargetFramework)'=='net10.0'">
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="10.0.1" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)'=='net9.0'">
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.11" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="9.0.11" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)'=='net8.0'">
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)'=='net7.0'">
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="7.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="7.0.1" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)'=='net6.0'">
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="6.0.1" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
 	</ItemGroup>
+
 
 </Project>

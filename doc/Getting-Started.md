@@ -49,7 +49,7 @@ Check that the package is referenced in your `.csproj` file:
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="XpressCache" Version="1.0.0" />
+  <PackageReference Include="XpressCache" Version="1.0.0.1" />
 </ItemGroup>
 ```
 

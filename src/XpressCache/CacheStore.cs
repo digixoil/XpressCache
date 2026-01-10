@@ -38,7 +38,6 @@ namespace XpressCache;
 ///     <term>Efficient Time Handling</term>
 ///     <description>
 ///       Uses <see cref="Environment.TickCount64"/> for expiry checks instead of <see cref="DateTime.Now"/>,
-
 ///       which is significantly faster and avoids timezone/DST issues.
 ///     </description>
 ///   </item>
@@ -219,7 +218,7 @@ public sealed class CacheStore : ICacheStore
     /// <para>
     /// The key stores a direct <see cref="Type"/> reference rather than a hash code to ensure
     /// correct identity comparison. Different types may have colliding hash codes, but 
-    /// <see cref="ReferenceEquals"/> guarantees correct type identity. This eliminates the risk
+    /// <see cref="Object.ReferenceEquals"/> guarantees correct type identity. This eliminates the risk
     /// of silent cache corruption from hash collisions.
     /// </para>
     /// </remarks>
