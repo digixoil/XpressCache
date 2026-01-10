@@ -1,4 +1,4 @@
-# Getting Started with XpressCache
+﻿# Getting Started with XpressCache
 
 A step-by-step tutorial for getting started with XpressCache.
 
@@ -645,13 +645,13 @@ Check out these example projects (in the GitHub repository):
 
 You've learned how to:
 
-? Install XpressCache via NuGet  
-? Create and use a cache in a console application  
-? Test cache stampede prevention  
-? Integrate with ASP.NET Core using DI  
-? Use caching in controllers and services  
-? Handle common scenarios (database, APIs, validation)  
-? Implement cache invalidation strategies  
+📦 Install XpressCache via NuGet  
+⚡ Create and use a cache in a console application  
+🛡️ Test cache stampede prevention  
+🌐 Integrate with ASP.NET Core using DI  
+🧑‍💻 Use caching in controllers and services  
+💡 Handle common scenarios (database, APIs, validation)  
+🧹 Implement cache invalidation strategies  
 
 **Next:** Explore the [API Reference](API-Reference.md) for detailed method documentation.
 
@@ -706,4 +706,4 @@ services.Configure<CacheStoreOptions>(options =>
 
 ---
 
-Happy caching! ??
+Happy caching! 🎉

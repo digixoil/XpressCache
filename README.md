@@ -1,4 +1,4 @@
-# XpressCache
+﻿# XpressCache
 
 A high-performance, thread-safe in-memory cache for .NET with built-in cache stampede (thundering herd) prevention using per-key single-flight locking.
 
@@ -7,15 +7,15 @@ A high-performance, thread-safe in-memory cache for .NET with built-in cache sta
 
 ## Features
 
-- ? **High Performance**: Lock-free read operations with value-type keys for zero-allocation lookups
-- ?? **Thread-Safe**: All operations are thread-safe with concurrent dictionary and atomic operations
-- ?? **Cache Stampede Prevention**: Per-key single-flight locking prevents thundering herd problems
-- ?? **Sliding Expiration**: Automatic TTL renewal on access with configurable expiry policies
-- ?? **Flexible Configuration**: Control stampede prevention globally or per-call
-- ?? **Multi-Targeting**: Supports .NET 6.0, .NET 7.0, and .NET 8.0
-- ?? **Automatic Cleanup**: Probabilistic and manual cleanup of expired entries
-- ?? **Custom Validation**: Support for custom validation functions on cached items
-- ?? **Fully Documented**: Comprehensive XML documentation for all public APIs
+- 🚀 **High Performance**: Lock-free read operations with value-type keys for zero-allocation lookups
+- 🧵 **Thread-Safe**: All operations are thread-safe with concurrent dictionary and atomic operations
+- 🛡️ **Cache Stampede Prevention**: Per-key single-flight locking prevents thundering herd problems
+- ⏳ **Sliding Expiration**: Automatic TTL renewal on access with configurable expiry policies
+- ⚙️ **Flexible Configuration**: Control stampede prevention globally or per-call
+- 🎯 **Multi-Targeting**: Supports .NET 6.0, .NET 7.0, and .NET 8.0
+- 🧹 **Automatic Cleanup**: Probabilistic and manual cleanup of expired entries
+- 🧪 **Custom Validation**: Support for custom validation functions on cached items
+- 📚 **Fully Documented**: Comprehensive XML documentation for all public APIs
 
 ## What is Cache Stampede?
 
@@ -237,13 +237,13 @@ When stampede prevention is enabled:
 ## Thread Safety Guarantees
 
 All operations are thread-safe:
-- ? `LoadItem` - Multiple concurrent calls are safe
-- ? `SetItem` - Atomic updates
-- ? `RemoveItem` - Safe concurrent removal
-- ? `GetCachedItems` - Returns consistent snapshot
-- ? `Clear` - Safe to call anytime
-- ? `CleanupCache` - Can run concurrently with other operations
-- ? `EnableCache` setter - Thread-safe property
+- 🧵 `LoadItem` - Multiple concurrent calls are safe
+- ✍️ `SetItem` - Atomic updates
+- ❌ `RemoveItem` - Safe concurrent removal
+- 📋 `GetCachedItems` - Returns consistent snapshot
+- 🧹 `Clear` - Safe to call anytime
+- 🧹 `CleanupCache` - Can run concurrently with other operations
+- 🔒 `EnableCache` setter - Thread-safe property
 
 ## Performance Characteristics
 
@@ -259,7 +259,7 @@ All operations are thread-safe:
 
 ## Best Practices
 
-### ? DO
+### ✅ DO
 
 - Use stampede prevention for expensive operations (database, API calls)
 - Set appropriate TTL based on data volatility
@@ -269,7 +269,7 @@ All operations are thread-safe:
 - Use `AllowParallelLoad` for cheap, idempotent operations
 - Monitor cache size and adjust `ProbabilisticCleanupThreshold`
 
-### ? DON'T
+### 🚫 DON'T
 
 - Don't cache very large objects (hundreds of MB per entry)
 - Don't use for persistent storage (in-memory only)
@@ -366,4 +366,4 @@ For issues, questions, or suggestions:
 
 ---
 
-Made with ?? by Digixoil
+Made with ❤️ by Digixoil
