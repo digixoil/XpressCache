@@ -11,7 +11,7 @@
 		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 		
 		<!-- Suppress nullable dereference warnings in tests and xUnit warnings for now (TODO: to be removed later) -->
-		<!-- check with: dotnet build src/XpressCache.slnx -c Release --no-restore -->
+		<!-- check with: dotnet build src/XpressCache.slnx -c Release -->
 		<NoWarn>CS8602;xUnit1031</NoWarn>
 	</PropertyGroup>
 
