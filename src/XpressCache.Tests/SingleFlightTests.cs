@@ -64,7 +64,7 @@ public class SingleFlightTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only one recovery executed
-        Assert.All(results, r => Assert.Equal("Recovered", r.Name));
+        Assert.All(results, r => Assert.Equal("Recovered", r?.Name ?? string.Empty));
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class SingleFlightTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Single-flight enforced
-        Assert.All(results, r => Assert.Equal("Recovered", r.Name));
+        Assert.All(results, r => Assert.Equal("Recovered", r?.Name ?? string.Empty));
     }
 
     [Fact]
@@ -274,8 +274,8 @@ public class SingleFlightTests
 
         // Assert
         Assert.False(secondStartedBeforeComplete); // Second didn't start until first completed
-        Assert.Equal("First", result1.Name);
-        Assert.Equal("First", result2.Name); // Second got cached result
+        Assert.Equal("First", result1?.Name ?? string.Empty);
+        Assert.Equal("First", result2?.Name ?? string.Empty); // Second got cached result
     }
 
     [Fact]
@@ -318,7 +318,7 @@ public class SingleFlightTests
         var result = await cache.LoadItem<TestEntity>(entityId, "subject", Recovery);
 
         // Assert
-        Assert.Equal("Success", result.Name);
+        Assert.Equal("Success", result?.Name ?? string.Empty);
     }
 
     private class TestEntity

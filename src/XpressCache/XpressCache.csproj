@@ -1,37 +1,67 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net10.0;net9.0;net8.0;net7.0;net6.0</TargetFrameworks>		
+		<!-- Target the oldest supported LTS + latest runtime -->
+		<!-- net6.0 ensures wide compatibility, net10.0 allows latest optimizations -->
+		<TargetFrameworks>net10.0;net9.0;net8.0;net7.0;net6.0</TargetFrameworks>
+
+		<!-- Language & safety features -->
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<LangVersion>latest</LangVersion>
+		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+		<NoWarn>CS8602;xUnit1031</NoWarn>
 
-		<!-- NuGet Package Metadata -->
+		<!-- NuGet package information -->
 		<PackageId>XpressCache</PackageId>
-		<Version>1.0.0.1</Version>
+		<Title>XpressCache</Title>
+		
+		<!-- NuGet version -->
+		<Version>1.0.1</Version>
+
+		<!-- Assembly versions -->
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>1.0.1.0</FileVersion>
+
 		<Authors>Russlan Kafri</Authors>
 		<Company>Digixoil</Company>
-		<Title>XpressCache</Title>
 		<AssemblyProduct>XpressCache</AssemblyProduct>
-		<Copyright>Copyright © 2026 Digixoil</Copyright>
-		<Description>A high-performance, thread-safe in-memory cache with built-in cache stampede (thundering herd) prevention using per-key single-flight locking. Features sliding expiration, custom validation, and configurable behavior.</Description>
-		<PackageTags>cache;caching;in-memory;thread-safe;single-flight;stampede-prevention;thundering-herd;concurrent;async</PackageTags>
+		<Copyright>Copyright © Digixoil</Copyright>
+
+		<Description>
+			A high-performance, thread-safe in-memory cache with built-in cache stampede
+			(thundering herd) prevention using per-key single-flight locking. Features sliding
+			expiration, custom validation, and configurable behavior.
+		</Description>
+
+		<PackageReleaseNotes>Refined release</PackageReleaseNotes>
+		<PackageTags>cache;caching;in-memory;thread-safe;single-flight;async;concurrent</PackageTags>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://www.digixoil.se/</PackageProjectUrl>
 		<RepositoryUrl>https://github.com/digixoil/XpressCache</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
-		<PackageReadmeFile>README.md</PackageReadmeFile>
 
-		<!-- Build Configuration -->
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageIcon>icon.png</PackageIcon>
+		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+		<PackageRepositoryUrl>https://github.com/digixoil/XpressCache</PackageRepositoryUrl>
+		
+
+		<!-- Packaging options -->
+		<!-- Consider keeping this off and using `dotnet pack -c Release` in CI instead -->
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+		<!-- Produce XML docs + symbol packages -->
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
+		<!-- Deterministic, source-linked builds -->
+		<ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+		<EmbedUntrackedSources>true</EmbedUntrackedSources>
+
 		<RootNamespace>XpressCache</RootNamespace>
 		<AssemblyName>XpressCache</AssemblyName>
-		
-		<PackageIcon>icon.png</PackageIcon>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -47,13 +77,16 @@
 		<DebugType>pdbonly</DebugType>
 		<Optimize>true</Optimize>
 		<OutputPath>bin\Release\</OutputPath>
-	</PropertyGroup>
+	</PropertyGroup>	
 
+	<!-- Files to include in the NuGet package -->
 	<ItemGroup>
 		<None Include="..\..\README.md" Pack="true" PackagePath="\" />
 		<None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
 		<None Include="..\..\assets\images\icon.png" Pack="true" PackagePath="\" />
 	</ItemGroup>
+
+	<!-- Runtime dependencies -->
 
 	<ItemGroup Condition="'$(TargetFramework)'=='net10.0'">
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
@@ -79,10 +112,18 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.1" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="6.0.1" />
 	</ItemGroup>
+	
+	<!-- Reference the lowest compatible versions; NuGet resolves higher ones automatically -->
+	<!--
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="6.0.1" />
+	</ItemGroup>
+	-->
 
+	<!-- SourceLink for GitHub debugging -->
 	<ItemGroup>
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
 	</ItemGroup>
-
 
 </Project>

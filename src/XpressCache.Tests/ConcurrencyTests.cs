@@ -55,7 +55,7 @@ public class ConcurrencyTests
 
         // Assert
         Assert.Equal(1, recoveryExecutions); // Only one recovery
-        Assert.All(results, r => Assert.Equal("Recovered", r.Name));
+        Assert.All(results, r => Assert.Equal("Recovered", r?.Name ?? string.Empty));
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class ConcurrencyTests
         }
 
         // Act
-        var tasks = new List<Task<TestEntity>>();
+        var tasks = new List<Task<TestEntity?>>();
         foreach (var entityId in entityIds)
         {
             for (int i = 0; i < callsPerKey; i++)
@@ -293,7 +293,7 @@ public class ConcurrencyTests
         var result = await cache.LoadItem<TestEntity>(entityId, "subject", Recovery);
 
         // Assert
-        Assert.Equal("Success", result.Name);
+        Assert.Equal("Success", result?.Name ?? string.Empty);
         Assert.Equal(2, attemptCount);
     }
 
@@ -312,7 +312,7 @@ public class ConcurrencyTests
             {
                 var result = await cache.LoadItem<TestEntity>(entityId, subject,
                     _ => Task.FromResult(new TestEntity { Name = $"Value-{subject}" }));
-                resultsBySubject.TryAdd($"{subject}-{Guid.NewGuid()}", result.Name);
+                resultsBySubject.TryAdd($"{subject}-{Guid.NewGuid()}", result?.Name ?? string.Empty);
                 return result;
             }))
         );
@@ -322,7 +322,7 @@ public class ConcurrencyTests
         // Assert - Each subject should have consistent values
         foreach (var subject in subjects)
         {
-            var subjectResults = results.Where(r => r.Name == $"Value-{subject}").ToList();
+            var subjectResults = results.Where(r => r?.Name == $"Value-{subject}").ToList();
             Assert.Equal(10, subjectResults.Count);
         }
     }
