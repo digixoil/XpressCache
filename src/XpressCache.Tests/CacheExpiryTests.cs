@@ -54,7 +54,7 @@ public class CacheExpiryTests
 
         // Assert
         Assert.Equal(2, recoveryCount); // Recovery called again after expiry
-        Assert.Equal("Second", result.Name);
+        Assert.Equal("Second", result?.Name ?? string.Empty);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public class CacheExpiryTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Recovery called only once
-        Assert.Equal("Cached", result.Name);
+        Assert.Equal("Cached", result?.Name ?? string.Empty);
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public class CacheExpiryTests
 
         // Assert
         Assert.Equal(1, recoveryCount); // Only first call did recovery
-        Assert.Equal("Cached", result.Name);
+        Assert.Equal("Cached", result?.Name ?? string.Empty);
     }
 
     [Fact]
@@ -173,7 +173,7 @@ public class CacheExpiryTests
 
         // Assert
         Assert.Equal(0, recoveryCount); // No recovery needed
-        Assert.Equal("NotExpired", result.Name);
+        Assert.Equal("NotExpired", result?.Name ?? string.Empty);
     }
 
     [Fact]

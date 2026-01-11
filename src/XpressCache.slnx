@@ -7,6 +7,9 @@
     <File Path="../doc/Performance-Guide.md" />
     <File Path="../doc/Testing-Guide.md" />
   </Folder>
+  <Folder Name="/piplines/">
+    <File Path="../.github/workflows/publish-nuget.yml" />
+  </Folder>
   <Project Path="XpressCache.Tests/XpressCache.Tests.csproj" />
   <Project Path="XpressCache/XpressCache.csproj" />
 </Solution>
