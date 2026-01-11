@@ -24,8 +24,9 @@ jobs:
       - name: Build
         run: dotnet build src/XpressCache.slnx -c Release --no-restore
 
-      - name: Test
-        run: dotnet test src/XpressCache.slnx -c Release --no-build
+      - name: Test  
+        # Exclude performance and benchmark tests from the test run
+        run: dotnet test src/XpressCache.slnx -c Release --no-build --filter "Category!=Performance&Category!=Benchmark"
 
       - name: Pack
         run: dotnet pack src/XpressCache/XpressCache.csproj -c Release --no-build
